@@ -1,0 +1,12 @@
+{
+  "generator": "docs/screenshots/generate-federation-tui.sh",
+  "source": "simulated disposable daemons",
+  "screenshots": [
+    "tui/hero.svg",
+    "federation-tui/list.svg",
+    "federation-tui/select-hub.svg",
+    "federation-tui/select-hub-project.svg",
+    "federation-tui/preview.svg",
+    "federation-tui/result.svg"
+  ]
+}

@@ -13,6 +13,7 @@ constraints that are too detailed for the main documentation.
 - [Data model and durability](data-model.md)
 - [Federation technical notes](federation.md)
 - [Hosted mode technical notes](hosted-mode.md)
+- [Semantic search technical notes](semantic-search.md)
 
 These notes are the curated home for kata's design rationale. Earlier planning
 specs and implementation plans should be folded into these notes once the work

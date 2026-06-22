@@ -44,6 +44,8 @@ You can:
   and relate them with `--parent`, `--blocks`, `--blocked-by`, and `--related`;
 - use short issue refs derived from ULIDs, such as `abc4` or `kata#abc4`;
 - search before creating and use idempotency keys for safe retries;
+- optionally enable semantic (vector) search to find issues by meaning, not
+  just keywords;
 - stream durable events for polling, live tailing, hooks, and TUI updates;
 - browse and edit issues in `kata tui`;
 - back up or migrate the local database with JSONL export/import;

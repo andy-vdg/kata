@@ -182,6 +182,9 @@ close; the structural guards still apply.
 
 ## Semantic search
 
+This section is the field reference; see the
+[Semantic search guide](../guide/semantic-search.md) for setup and behavior.
+
 Semantic (vector) search is opt-in. With no `[search.embeddings]` section,
 `kata search` behaves exactly as before — lexical FTS only — and the daemon
 makes no embedding network calls. Adding the section enables hybrid search: the

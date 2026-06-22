@@ -71,7 +71,7 @@ kata search <query> [--lexical | --hybrid | --semantic]
 ```
 
 By default `kata search` runs lexical (FTS) search. When the daemon has
-[semantic search](configuration.md#semantic-search) configured, search
+[semantic search](../guide/semantic-search.md) configured, search
 automatically fuses lexical and vector results. The mode flags are mutually
 exclusive and force a strategy:
 

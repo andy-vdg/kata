@@ -3,6 +3,7 @@ package embedding
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestEmbedTextJoinsAndTruncatesOnRuneBoundary(t *testing.T) {
@@ -10,13 +11,17 @@ func TestEmbedTextJoinsAndTruncatesOnRuneBoundary(t *testing.T) {
 	if got != "Title\n\nBody" {
 		t.Fatalf("join: got %q", got)
 	}
-	long := strings.Repeat("é", maxEmbedChars) // 2 bytes each; forces boundary care
+	// Use a 3-byte rune so a byte-based truncation (s[:maxEmbedChars]) would
+	// slice mid-rune and corrupt UTF-8. The recipe must cut on a rune boundary.
+	// "三" is 3 bytes; maxEmbedChars is not a multiple of 3, so a byte cut lands
+	// inside a rune.
+	long := strings.Repeat("三", maxEmbedChars+100)
 	out := EmbedText(long, "")
-	if len([]rune(out)) > maxEmbedChars {
-		t.Fatalf("truncation exceeded rune cap: %d", len([]rune(out)))
+	if !utf8.ValidString(out) {
+		t.Fatalf("truncation split a multi-byte rune: output is not valid UTF-8")
 	}
-	if !strings.HasPrefix(long+"\n\n", out) && !strings.HasPrefix(out, "é") {
-		t.Fatalf("truncation produced invalid prefix")
+	if n := utf8.RuneCountInString(out); n != maxEmbedChars {
+		t.Fatalf("truncation kept %d runes, want exactly %d", n, maxEmbedChars)
 	}
 }
 

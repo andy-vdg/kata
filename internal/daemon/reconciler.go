@@ -169,6 +169,12 @@ func (r *Reconciler) reconcileOnce(ctx context.Context) error {
 		}
 	}
 	r.markSuccess()
+	// The rows just embedded are no longer dirty, so drop them from the backlog
+	// gauge now rather than letting it read the pre-embed count until the next
+	// sweep. A partial batch lands at 0 (the queue is drained); a full batch
+	// self-wakes below, and that cycle's ListEmbedTargets recomputes the true
+	// remaining count.
+	r.setBacklog(0)
 	// More may be dirty than one batch; nudge ourselves to continue.
 	if len(targets) == r.cfg.BatchSize {
 		r.Wake()

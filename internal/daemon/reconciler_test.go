@@ -86,6 +86,33 @@ func TestReconcileOnceEmbedsDirtyTargets(t *testing.T) {
 	}
 }
 
+// TestReconcileOnceClearsBacklogAfterDrain pins the /health freshness signal:
+// once a cycle embeds the last dirty batch, Backlog must read 0 immediately,
+// not stay at the pre-embed count until the next 5m sweep. A partial batch
+// does not self-wake, so a stale gauge here would lie to operators (and to the
+// e2e that polls backlog==0) for minutes.
+func TestReconcileOnceClearsBacklogAfterDrain(t *testing.T) {
+	ctx := context.Background()
+	store := newReconcilerTestStore(t)
+	proj, _ := store.CreateProject(ctx, "spoke-project")
+	if _, _, err := store.CreateIssue(ctx, db.CreateIssueParams{ProjectID: proj.ID, Title: "t", Body: "b", Author: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	emb := &fakeEmbedder{fp: "a" + repeat63reconciler, dims: 2}
+	r := NewReconciler(store, emb, ReconcilerConfig{BatchSize: 64})
+
+	// A single cycle that embeds the only dirty issue must leave backlog at 0.
+	if err := r.reconcileOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if emb.n != 1 {
+		t.Fatalf("embedded %d, want 1", emb.n)
+	}
+	if h := r.Health(); h.Backlog != 0 {
+		t.Fatalf("backlog after draining the queue = %d, want 0", h.Backlog)
+	}
+}
+
 func TestReconcileDefinitiveErrorPinsHealth(t *testing.T) {
 	ctx := context.Background()
 	store := newReconcilerTestStore(t)

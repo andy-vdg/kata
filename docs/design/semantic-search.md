@@ -151,20 +151,35 @@ Dirty means any of:
 
 1. no `issue_embeddings` row (never embedded);
 2. `embed_fingerprint != current` (model/recipe/salt changed);
-3. `issues.revision != issue_embeddings.issue_revision` (content may have
-   changed). Revision comparison, not timestamps: timestamp equality at
-   coarse precision can miss same-instant edits, and `updated_at` should
-   remain a plain audit field.
+3. `issues.content_revision != issue_embeddings.embedded_content_revision`
+   (the embedded source text changed).
+
+The third predicate needs a counter that moves *exactly* when embeddable
+content changes. The existing `issues.revision` is unsuitable on both ends:
+it is the metadata If-Match counter (`internal/db/sqlitestore/store_metadata.go`),
+and title/body edits do not touch it — `editIssue` bumps only `updated_at`
+(`internal/db/sqlitestore/queries.go`). Reusing `revision` would therefore
+miss the very edits that matter, and broadening it would silently change
+metadata optimistic-concurrency semantics. So this design adds a dedicated
+`issues.content_revision` — monotonic, bumped by `editIssue` only when title
+or body actually change — and leaves `revision` untouched. Timestamps are
+not used either: `updated_at` also moves on non-content mutations (status
+flips), and its millisecond precision can collapse same-instant edits.
 
 Soft-deleted issues are excluded from targets while deleted; their rows are
 kept so restore costs nothing. Purge removes rows via `ON DELETE CASCADE`.
 
 Cycle: wake on a debounced (~1–2s) post-commit nudge, on startup, and on a
 periodic safety sweep (~5m) that recovers anything missed across restarts.
-Take up to `batch_size` (default 64) targets; recompute each candidate's
-`content_hash`; where the hash is unchanged (status flip, comment add), touch
-`issue_revision`/`updated_at` without an API call; embed the rest in one
-batched request; upsert rows independently so partial progress survives.
+Take up to `batch_size` (default 64) dirty targets, embed them in one batched
+request, and upsert rows independently — each carrying the current
+`embed_fingerprint` and the issue's `content_revision` — so partial progress
+survives. Because `content_revision` moves only on real content change,
+status flips and comment adds never enter the queue, so there is no
+hash-recompute or no-op-touch step. The one inefficiency is a title/body edit
+that reverts to a prior value (`A→B→A`): the counter advances both times, so
+the unchanged content is re-embedded once. That is rare and harmless, and
+buys a simpler, exact dirty signal over carrying a content hash.
 
 Failure classes:
 
@@ -200,22 +215,22 @@ semantic recall lags.
 
 ```sql
 CREATE TABLE issue_embeddings (
-  issue_id          INTEGER/BIGINT PRIMARY KEY
-                    REFERENCES issues(id) ON DELETE CASCADE,
-  issue_revision    INTEGER NOT NULL,
-  embed_fingerprint TEXT NOT NULL CHECK (length(embed_fingerprint) = 64),
-  content_hash      TEXT NOT NULL CHECK (length(content_hash) = 64),
-  dims              INTEGER NOT NULL CHECK (dims > 0),
-  vector_bytes      BLOB/BYTEA NOT NULL,  -- dims × float32 LE, L2-normalized
-  updated_at        TEXT/timestamptz NOT NULL,
+  issue_id                  INTEGER/BIGINT PRIMARY KEY
+                            REFERENCES issues(id) ON DELETE CASCADE,
+  embedded_content_revision INTEGER NOT NULL,  -- issues.content_revision at embed time
+  embed_fingerprint         TEXT NOT NULL CHECK (length(embed_fingerprint) = 64),
+  dims                      INTEGER NOT NULL CHECK (dims > 0),
+  vector_bytes              BLOB/BYTEA NOT NULL,  -- dims × float32 LE, L2-normalized
+  updated_at                TEXT/timestamptz NOT NULL,
   CHECK (length(vector_bytes) = dims * 4)   -- octet_length() on PostgreSQL
 );
 ```
 
 The column is `vector_bytes`, not `vector`, so nothing reads as pgvector's
 `vector(N)` type. The table is canonical schema on both backends and rides a
-schema-version bump: SQLite upgrades via the usual JSONL cutover; PostgreSQL
-follows the existing operator-migration policy
+schema-version bump that also adds the `issues.content_revision` column
+(default 0) and the `editIssue` bump above: SQLite upgrades via the usual
+JSONL cutover; PostgreSQL follows the existing operator-migration policy
 (`internal/db/pgstore/open.go` refuses version mismatches).
 
 pgvector is deliberately absent from the canonical schema. PostgreSQL
@@ -236,9 +251,12 @@ At issue-tracker scale (1–10k issues per project at 768 dims ≈ 3–30MB,
 ~1–5ms to scan; 50k ≈ ~30ms) exhaustive cosine is sufficient and avoids any
 driver or extension dependency.
 
-The per-project cache holds `(issue_id, vector)` for current-fingerprint
-rows only, and is consulted under one invariant: **the cache supplies
-candidates and similarities, never visibility or row data.** Every
+The cache is keyed by `(project_id, embed_fingerprint)` and holds
+`(issue_id, vector)` for rows at that fingerprint only — a model swap creates
+a fresh entry under the new fingerprint and abandons the old one, so
+stale-fingerprint vectors can never be reused. It is consulted under one
+invariant: **the cache supplies candidates and similarities, never
+visibility or row data.** Every
 `SearchVector` resolves candidate ids against the live `issues` table —
 project scope, `deleted_at` filter, and all returned fields come from that
 final query. Soft delete, restore, and purge therefore cannot make the cache
@@ -253,8 +271,9 @@ until k results are found or candidates are exhausted — filtered-out ids
 never silently shrink the result set.
 
 Cache freshness is verified per query with one cheap probe —
-`(count, max(updated_at))` over the project's embedding rows — rather than
-trusting in-process invalidation alone, which also keeps multi-daemon
+`(count, max(updated_at))` over the project's rows *at the active
+fingerprint* (`WHERE embed_fingerprint = ?`), matching the cache key — rather
+than trusting in-process invalidation alone, which also keeps multi-daemon
 shared-database setups correct.
 
 ### PostgreSQL vector execution: pgvector as best-effort acceleration
@@ -348,11 +367,27 @@ of version reporting. An always-present `mode` also tells agents whether
 semantic search is even on. A CLI/API compatibility test pins the
 unconfigured-default response shape and score semantics.
 
-CLI human output prints a mode header line and uses `%.4f` for hybrid and
-semantic scores — RRF scores cluster around 0.01–0.03 and the current
-`%.2f` (`cmd/kata/search.go:142`) would render them indistinguishable.
-Lexical output is unchanged. Agent rows and `--json` carry raw floats and
-the new response fields untouched.
+The CLI has three output surfaces, each handled to a precise shape:
+
+- `--json`: the response envelope is passed through unchanged
+  (`printSearchResults` JSON branch, `cmd/kata/search.go`), so `mode`,
+  `degraded`, and `degraded_reason` appear automatically.
+- Agent mode (`OK search ...` status line + `key=value` rows,
+  `cmd/kata/search.go:116`) is a machine surface and follows the same
+  explicit-evolution rule as the HTTP API. The status line always gains
+  `mode=<mode>` (and `degraded=<reason>` when degraded); rows gain
+  `semantic` in their `matched=` list when the vector leg contributed. This
+  is a real shape change to agent output — the compatibility test pins the
+  new shape, including `mode=lexical` on an unconfigured daemon, and pins
+  that lexical score semantics (negated BM25) are unchanged.
+- Human mode (`%-8s  %.2f  %-8s  %s  (%s)` per row, `cmd/kata/search.go:142`)
+  is an ergonomic surface, so lexical output stays byte-identical to today —
+  no header, `%.2f` — and is pinned by the compatibility test. Hybrid and
+  semantic, which can only occur once embeddings are configured, print a
+  leading `# mode=<mode>` line (with a degraded note when applicable) and
+  render scores with `%.4f`, since RRF scores cluster around 0.01–0.03 and
+  `%.2f` would render them indistinguishable. There is no contradiction with
+  "lexical unchanged": the header appears only in the non-lexical modes.
 
 ## Failure modes
 
@@ -379,17 +414,22 @@ TDD throughout (red, green, refactor). Highlights, not an exhaustive list:
 - RRF as a pure function: overlapping/disjoint/empty legs, similarity floor,
   determinism and tie-breaks.
 - Storage conformance suite shared by both backends (pgstore joins in
-  Phase 2): upsert round-trips including CHECK violations; the three dirty
-  predicates plus the hash-equal touch path; fingerprint filtering;
-  visibility joins under soft-delete/restore/purge; exact top-k refill with
-  deleted-heavy caches; the cache freshness probe; JSONL round-trip by UID
-  including live-only exclusion of unexported parents.
+  Phase 2): upsert round-trips including CHECK violations (dims, vector
+  length, fingerprint length); the three dirty predicates (missing,
+  fingerprint mismatch, `content_revision` mismatch); that `content_revision`
+  bumps on title/body edits but not on status flips or comment adds;
+  fingerprint filtering; visibility joins under soft-delete/restore/purge;
+  exact top-k refill with deleted-heavy caches; the fingerprint-scoped cache
+  key and freshness probe; JSONL round-trip by UID including live-only
+  exclusion of unexported parents.
 - Daemon: reconciler against a fake embedder (backfill, nudge debounce,
   model-swap gradual migration, backoff classes, health fields); handler
   mode-resolution matrix (hung embedder returns FTS results degraded;
   explicit-mode 400/503; semantic-on-empty-index 200).
-- CLI/API compatibility test pinning the unconfigured-default search
-  response (shape, `mode:"lexical"`, unchanged score semantics).
+- CLI/API compatibility test pinning the unconfigured-default search across
+  surfaces: JSON envelope and agent status line carry `mode:"lexical"` /
+  `mode=lexical`; human output is byte-identical to today; lexical score
+  semantics (negated BM25) unchanged.
 - e2e with a deterministic fixture-map embedder and neutral placeholder
   data: create → instant lexical hit; after reconcile → paraphrase found
   semantically; embedder killed → degraded lexical.

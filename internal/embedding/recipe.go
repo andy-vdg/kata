@@ -33,8 +33,12 @@ func EmbedText(title, body string) string {
 // endpoint URL is deliberately excluded so moving a port or host does not
 // force a re-embed. salt is the operator's lever for "same model name,
 // different weights".
+//
+// model and salt are operator-supplied, so they are length-prefixed before
+// hashing: this makes the encoding unambiguous regardless of their bytes
+// (including NUL), so no two distinct component tuples can collide.
 func Fingerprint(model string, dims int, salt string) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "v%d\x00%s\x00%d\x00%s", RecipeVersion, model, dims, salt)
+	fmt.Fprintf(h, "v%d|%d:%s|%d|%d:%s", RecipeVersion, len(model), model, dims, len(salt), salt)
 	return hex.EncodeToString(h.Sum(nil))
 }

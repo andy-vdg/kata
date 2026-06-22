@@ -153,7 +153,13 @@ func (c *Client) embedBatch(ctx context.Context, texts []string) ([][]float32, e
 		return nil, fmt.Errorf("embedding: request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	// Cap the response read, but scale it to the expected payload: one vector
+	// per input at `dims` float32s, JSON-encoded (~16 bytes/float) plus 1 MiB
+	// of structural overhead. A fixed 1 MiB cap silently truncated common
+	// configs (e.g. 3072-dim models at batch 64 ≈ 3 MiB), surfacing as a
+	// misleading decode error.
+	maxBytes := int64(c.dims)*int64(len(texts))*16 + (1 << 20)
+	rb, _ := io.ReadAll(io.LimitReader(resp.Body, maxBytes))
 	if resp.StatusCode != http.StatusOK {
 		return nil, &APIError{
 			StatusCode: resp.StatusCode,
@@ -179,11 +185,19 @@ func (c *Client) embedBatch(ctx context.Context, texts []string) ([][]float32, e
 }
 
 func parseRetryAfter(h string) time.Duration {
+	h = strings.TrimSpace(h)
 	if h == "" {
 		return 0
 	}
-	if secs, err := strconv.Atoi(strings.TrimSpace(h)); err == nil && secs >= 0 {
+	if secs, err := strconv.Atoi(h); err == nil && secs >= 0 {
 		return time.Duration(secs) * time.Second
+	}
+	// RFC 7231 also allows an HTTP-date form. Convert it to a delay; clamp a
+	// past date to 0 so callers never treat it as a negative backoff.
+	if t, err := http.ParseTime(h); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
 	}
 	return 0
 }

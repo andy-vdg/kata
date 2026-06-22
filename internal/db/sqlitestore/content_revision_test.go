@@ -3,6 +3,7 @@ package sqlitestore_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kata/internal/db"
@@ -85,4 +86,58 @@ func TestContentRevisionBumpsFromEditIssueAtomic(t *testing.T) {
 	require.NoError(t, err)
 	require.Equalf(t, afterTitle, contentRev(ctx, t, d, iss.ID),
 		"atomic priority edit must not bump content_revision")
+}
+
+func TestContentRevisionBumpsFromImport(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	proj := createProject(ctx, t, d, "spoke-project")
+
+	t1 := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
+	t3 := time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
+
+	// Initial import creates the issue.
+	_, _, err := d.ImportBatch(ctx, db.ImportBatchParams{
+		ProjectID: proj.ID, Source: "beads", Actor: "importer",
+		Items: []db.ImportItem{{
+			ExternalID: "a", Title: "first", Body: "b", Author: "alice",
+			Status: "open", CreatedAt: t1, UpdatedAt: t1,
+		}},
+	})
+	require.NoError(t, err)
+	m, err := d.ImportMappingBySource(ctx, proj.ID, "beads", "issue", "a")
+	require.NoError(t, err)
+	require.NotNil(t, m.IssueID)
+	issueID := *m.IssueID
+	base := contentRev(ctx, t, d, issueID)
+
+	// Re-import the same ExternalID with a changed Title (newer UpdatedAt so
+	// updateImportedIssue runs) bumps content_revision.
+	res, _, err := d.ImportBatch(ctx, db.ImportBatchParams{
+		ProjectID: proj.ID, Source: "beads", Actor: "importer",
+		Items: []db.ImportItem{{
+			ExternalID: "a", Title: "second", Body: "b", Author: "alice",
+			Status: "open", CreatedAt: t1, UpdatedAt: t2,
+		}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, res.Updated)
+	afterTitle := contentRev(ctx, t, d, issueID)
+	require.Equalf(t, base+1, afterTitle, "import title change must bump content_revision")
+
+	// Re-import again with same Title/Body but a non-content change (status,
+	// owner) and newer UpdatedAt. updateImportedIssue runs but must NOT bump.
+	res, _, err = d.ImportBatch(ctx, db.ImportBatchParams{
+		ProjectID: proj.ID, Source: "beads", Actor: "importer",
+		Items: []db.ImportItem{{
+			ExternalID: "a", Title: "second", Body: "b", Author: "alice",
+			Owner: strPtr("bob"), Status: "closed", ClosedReason: strPtr("done"),
+			CreatedAt: t1, UpdatedAt: t3, ClosedAt: &t3,
+		}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, res.Updated)
+	require.Equalf(t, afterTitle, contentRev(ctx, t, d, issueID),
+		"import non-content change must not bump content_revision")
 }

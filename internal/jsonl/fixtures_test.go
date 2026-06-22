@@ -504,6 +504,7 @@ func dropV10Additions(t *testing.T, raw *sql.DB) {
 		`DROP TABLE recurrences`,
 		`ALTER TABLE issues DROP COLUMN metadata`,
 		`ALTER TABLE issues DROP COLUMN revision`,
+		`ALTER TABLE issues DROP COLUMN content_revision`,
 		`DROP INDEX IF EXISTS projects_area`,
 		`ALTER TABLE projects DROP COLUMN metadata`,
 		`ALTER TABLE projects DROP COLUMN revision`,

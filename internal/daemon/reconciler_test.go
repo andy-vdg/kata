@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"go.kenn.io/kata/internal/db"
 	"go.kenn.io/kata/internal/db/sqlitestore"
 	"go.kenn.io/kata/internal/embedding"
@@ -78,6 +80,9 @@ func TestReconcileOnceEmbedsDirtyTargets(t *testing.T) {
 	}
 	if h := r.Health(); h.Backlog != 0 || h.LastError != "" {
 		t.Fatalf("unexpected health: %#v", h)
+	}
+	if h := r.Health(); h.LastSuccessAt == nil {
+		t.Fatal("a clean pass must record LastSuccessAt")
 	}
 }
 
@@ -170,6 +175,103 @@ func TestReconcileOncePartialBatchDoesNotWake(t *testing.T) {
 	case <-r.wake:
 		t.Fatal("partial batch should not re-arm Wake")
 	default:
+	}
+}
+
+// flakyEmbedder fails its first failUntil Embed calls with err, then succeeds.
+// It records the total number of successfully embedded texts. All access is
+// guarded so Run's goroutine and the test goroutine can read/write safely.
+type flakyEmbedder struct {
+	fp        string
+	dims      int
+	err       error
+	failUntil int
+
+	mu       sync.Mutex
+	calls    int
+	embedded int
+}
+
+func (f *flakyEmbedder) Fingerprint() string { return f.fp }
+func (f *flakyEmbedder) Dims() int           { return f.dims }
+func (f *flakyEmbedder) BatchSize() int      { return 64 }
+func (f *flakyEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if f.calls <= f.failUntil {
+		return nil, f.err
+	}
+	f.embedded += len(texts)
+	out := make([][]float32, len(texts))
+	for i := range texts {
+		out[i] = []float32{1, 0}
+	}
+	return out, nil
+}
+
+func (f *flakyEmbedder) embeddedCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.embedded
+}
+
+func (f *flakyEmbedder) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+func TestRunDrainsAfterTransientFailureThenExitsOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := newReconcilerTestStore(t)
+	proj, _ := store.CreateProject(ctx, "spoke-project")
+	for i := 0; i < 3; i++ {
+		if _, _, err := store.CreateIssue(ctx, db.CreateIssueParams{ProjectID: proj.ID, Title: "t", Body: "b", Author: "x"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Fail the first Embed (transient), then succeed. With tiny backoffs the
+	// retry happens almost immediately, so the loop drains the backlog quickly.
+	emb := &flakyEmbedder{fp: "a" + repeat63reconciler, dims: 2, failUntil: 1, err: errors.New("connection refused")}
+	r := NewReconciler(store, emb, ReconcilerConfig{
+		BatchSize:  64,
+		MinBackoff: time.Millisecond,
+		MaxBackoff: 5 * time.Millisecond,
+		SweepEvery: time.Millisecond,
+	})
+
+	done := make(chan error, 1)
+	go func() { done <- r.Run(ctx) }()
+	r.Wake()
+
+	// Poll until all three targets are embedded and the backoff has reset on
+	// success (LastError cleared, LastSuccessAt set). Poll rather than sleep so
+	// the test is robust against scheduling jitter.
+	require.Eventually(t, func() bool {
+		if emb.embeddedCount() < 3 {
+			return false
+		}
+		h := r.Health()
+		return h.LastSuccessAt != nil && h.LastError == "" && h.Backlog == 0
+	}, 2*time.Second, time.Millisecond, "reconciler did not drain the backlog after a transient failure")
+
+	// Cancelling ctx must make Run return promptly with the ctx error.
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run returned %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not exit after ctx cancel")
+	}
+
+	// The failed first attempt must have set LastError at the time; the later
+	// success cleared it (backoff-reset-on-success), proving recovery.
+	if c := emb.callCount(); c < 2 {
+		t.Fatalf("expected at least one retry after the transient failure, got %d Embed calls", c)
 	}
 }
 

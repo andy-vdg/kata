@@ -81,6 +81,45 @@ func TestEmbed429CarriesRetryAfter(t *testing.T) {
 	}
 }
 
+func TestEmbed429RetryAfterHTTPDate(t *testing.T) {
+	// A future HTTP-date Retry-After must be converted to a positive delay,
+	// bounded by the offset (plus a little slack for the round trip).
+	const offset = 30 * time.Second
+	future := time.Now().UTC().Add(offset).Format(http.TimeFormat)
+	srv := newFakeServer(t, 429, `{}`, future)
+	defer srv.Close()
+	c, _ := New(Config{BaseURL: srv.URL, Model: "m", Dims: 2})
+	_, err := c.Embed(context.Background(), []string{"x"})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("want APIError, got %v", err)
+	}
+	if apiErr.RetryAfter <= 0 {
+		t.Fatalf("RetryAfter = %v, want a positive delay from the HTTP-date", apiErr.RetryAfter)
+	}
+	// http.TimeFormat has 1-second resolution, so the parsed instant can sit up
+	// to a second beyond `offset`; add slack for that plus request latency.
+	if apiErr.RetryAfter > offset+5*time.Second {
+		t.Fatalf("RetryAfter = %v, want <= %v", apiErr.RetryAfter, offset+5*time.Second)
+	}
+}
+
+func TestEmbed429RetryAfterPastHTTPDateClampsToZero(t *testing.T) {
+	// A past HTTP-date must clamp to 0, never a negative backoff.
+	past := time.Now().UTC().Add(-1 * time.Hour).Format(http.TimeFormat)
+	srv := newFakeServer(t, 429, `{}`, past)
+	defer srv.Close()
+	c, _ := New(Config{BaseURL: srv.URL, Model: "m", Dims: 2})
+	_, err := c.Embed(context.Background(), []string{"x"})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("want APIError, got %v", err)
+	}
+	if apiErr.RetryAfter != 0 {
+		t.Fatalf("RetryAfter = %v, want 0 (past date clamped)", apiErr.RetryAfter)
+	}
+}
+
 func TestEmbedBatchesPreserveOrder(t *testing.T) {
 	var calls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

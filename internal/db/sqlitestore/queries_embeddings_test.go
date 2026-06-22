@@ -259,6 +259,80 @@ func TestSearchVectorRefillsPastSoftDeletedTopHits(t *testing.T) {
 	require.Greaterf(t, hits[0].Score, hits[1].Score, "survivors must remain in descending rank order")
 }
 
+func TestSearchVectorReflectsReEmbedAfterCacheWarm(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	proj := createProject(ctx, t, d, "spoke-project")
+	fp := "a" + repeat63
+
+	a := mkEmbeddingIssue(ctx, t, d, proj.ID, "a")
+	b := mkEmbeddingIssue(ctx, t, d, proj.ID, "b")
+	embed := func(iss db.Issue, v []float32) {
+		cr := contentRev(ctx, t, d, iss.ID)
+		require.NoError(t, d.UpsertIssueEmbedding(ctx, db.IssueEmbedding{
+			IssueID: iss.ID, EmbeddedContentRevision: cr, Fingerprint: fp, Dims: 2, Vector: v,
+		}))
+	}
+	// Initially a is nearer to the query [1, 0] than b.
+	embed(a, []float32{1, 0})
+	embed(b, []float32{0, 1})
+
+	// Warm the cache: this first search loads and caches the vector set with a
+	// ranking (a before b).
+	hits, err := d.SearchVector(ctx, proj.ID, []float32{1, 0}, fp, 10, false)
+	require.NoError(t, err)
+	require.Len(t, hits, 2)
+	require.Equalf(t, a.ID, hits[0].Issue.ID, "a should rank first before the re-embed")
+
+	// Re-embed to flip the ranking: tilt a off-axis (worse) and align b on-axis
+	// (best). The upsert must invalidate the cache, and the (count, maxUpdated)
+	// freshness probe is the backstop, so the next search reflects the NEW
+	// order — not the stale cached ranking that put a first.
+	embed(a, []float32{0.6, 0.8})
+	embed(b, []float32{1, 0})
+	hits, err = d.SearchVector(ctx, proj.ID, []float32{1, 0}, fp, 10, false)
+	require.NoError(t, err)
+	require.Len(t, hits, 2)
+	require.Equalf(t, b.ID, hits[0].Issue.ID, "re-embed must flip the ranking; cache was not invalidated")
+	require.Greaterf(t, hits[0].Score, hits[1].Score, "scores must reflect the re-embedded vectors")
+}
+
+func TestSearchVectorIncludeDeletedSurfacesSoftDeletedAndCapsK(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	proj := createProject(ctx, t, d, "spoke-project")
+	fp := "a" + repeat63
+
+	near := mkEmbeddingIssue(ctx, t, d, proj.ID, "near")
+	far := mkEmbeddingIssue(ctx, t, d, proj.ID, "far")
+	embed := func(iss db.Issue, v []float32) {
+		cr := contentRev(ctx, t, d, iss.ID)
+		require.NoError(t, d.UpsertIssueEmbedding(ctx, db.IssueEmbedding{
+			IssueID: iss.ID, EmbeddedContentRevision: cr, Fingerprint: fp, Dims: 2, Vector: v,
+		}))
+	}
+	embed(near, []float32{1, 0})
+	embed(far, []float32{0.5, float32(math.Sqrt(1 - 0.25))})
+
+	// Soft-delete the top hit.
+	_, _, _, err := d.SoftDeleteIssue(ctx, near.ID, "tester")
+	require.NoError(t, err)
+
+	// includeDeleted=true: the soft-deleted top hit must still surface, ranked
+	// first (covers the includeDeleted branch of liveIssue).
+	hits, err := d.SearchVector(ctx, proj.ID, []float32{1, 0}, fp, 10, true)
+	require.NoError(t, err)
+	require.Lenf(t, hits, 2, "includeDeleted must surface the soft-deleted issue")
+	require.Equalf(t, near.ID, hits[0].Issue.ID, "soft-deleted top hit must rank first under includeDeleted")
+	require.Equal(t, far.ID, hits[1].Issue.ID)
+
+	// k=1 caps to exactly the single top result.
+	hits, err = d.SearchVector(ctx, proj.ID, []float32{1, 0}, fp, 1, true)
+	require.NoError(t, err)
+	require.Lenf(t, hits, 1, "k=1 must cap to exactly one result")
+	require.Equal(t, near.ID, hits[0].Issue.ID)
+}
+
 func TestEmbeddingStats(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)

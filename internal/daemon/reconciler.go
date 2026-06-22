@@ -77,9 +77,11 @@ func (r *Reconciler) Wake() {
 	}
 }
 
-// Health returns a snapshot of reconciler state. LastSuccessAt is deep-copied
-// so a returned snapshot can never be mutated by a later cycle, even if the
-// caller (e.g. the /health handler) reads it concurrently.
+// Health returns a snapshot of reconciler state. markSuccess swaps in a fresh
+// *time.Time rather than mutating in place, so today there is no shared pointer
+// to race on. Deep-copying LastSuccessAt here is defensive isolation: it locks
+// down the "a returned snapshot is never aliased to live state" invariant so a
+// future in-place mutation can't silently start leaking through callers.
 func (r *Reconciler) Health() ReconcilerHealth {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -3,6 +3,7 @@ package daemon
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"go.kenn.io/kata/internal/db"
 )
 
@@ -36,6 +37,35 @@ func TestMergeRRFEmptyLegs(t *testing.T) {
 	if got := mergeRRF(lex, nil, 10); len(got) != 1 || got[0].Issue.ID != 1 {
 		t.Fatalf("lexical-only passthrough failed: %#v", got)
 	}
+}
+
+func TestMergeRRFRespectsLimit(t *testing.T) {
+	lex := []db.SearchCandidate{cand(1, 5, "title"), cand(2, 4, "body")}
+	vec := []db.SearchCandidate{cand(2, 0.9, "semantic"), cand(3, 0.8, "semantic")}
+	merged := mergeRRF(lex, vec, 2)
+
+	require.Len(t, merged, 2)
+	// Issue 2 is in both legs (highest RRF), so it survives the truncation; the
+	// next slot goes to the higher-ranked of the remaining singletons (issue 1
+	// at lexical rank 0 outscores issue 3 at vector rank 1).
+	require.Equal(t, int64(2), merged[0].Issue.ID)
+	require.Equal(t, int64(1), merged[1].Issue.ID)
+}
+
+func TestMergeRRFTieBreaksByLowerIssueID(t *testing.T) {
+	// Issue 7 appears only in lexical at rank 0; issue 3 only in vector at rank
+	// 0. Both score 1/(60+0+1), an exact RRF tie. The deterministic tie-break
+	// is ascending issue id, so issue 3 must sort first even though issue 7 was
+	// added to the lexical leg first. This fails if the id tie-break is dropped
+	// or reversed.
+	lex := []db.SearchCandidate{cand(7, 5, "title")}
+	vec := []db.SearchCandidate{cand(3, 0.9, "semantic")}
+	merged := mergeRRF(lex, vec, 10)
+
+	require.Len(t, merged, 2)
+	require.InDelta(t, merged[0].Score, merged[1].Score, 1e-12, "scores must be an exact RRF tie")
+	require.Equalf(t, int64(3), merged[0].Issue.ID, "tie must break to the lower issue id")
+	require.Equal(t, int64(7), merged[1].Issue.ID)
 }
 
 func TestResolveMode(t *testing.T) {

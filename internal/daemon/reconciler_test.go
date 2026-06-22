@@ -113,6 +113,36 @@ func TestReconcileOnceClearsBacklogAfterDrain(t *testing.T) {
 	}
 }
 
+// TestReconcileOnceFullBatchKeepsBacklogNonZero is the counterpart to the
+// drain test: a FULL batch (more dirty rows remain) must NOT reset the gauge to
+// 0. Clearing it would make /health report backlog==0 while the index is still
+// incomplete, letting an operator or a polling test proceed too early. With
+// BatchSize 1 and 2 dirty issues the cycle embeds one and leaves one, so the
+// gauge must read the batch count (1), not 0. The next cycle re-lists and
+// reports the true remaining count.
+func TestReconcileOnceFullBatchKeepsBacklogNonZero(t *testing.T) {
+	ctx := context.Background()
+	store := newReconcilerTestStore(t)
+	proj, _ := store.CreateProject(ctx, "spoke-project")
+	for i := 0; i < 2; i++ {
+		if _, _, err := store.CreateIssue(ctx, db.CreateIssueParams{ProjectID: proj.ID, Title: "t", Body: "b", Author: "x"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	emb := &fakeEmbedder{fp: "a" + repeat63reconciler, dims: 2}
+	r := NewReconciler(store, emb, ReconcilerConfig{BatchSize: 1})
+
+	if err := r.reconcileOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if emb.n != 1 {
+		t.Fatalf("embedded %d, want 1 (one batch)", emb.n)
+	}
+	if h := r.Health(); h.Backlog != 1 {
+		t.Fatalf("backlog after a full batch = %d, want 1 (queue not yet drained)", h.Backlog)
+	}
+}
+
 func TestReconcileDefinitiveErrorPinsHealth(t *testing.T) {
 	ctx := context.Background()
 	store := newReconcilerTestStore(t)

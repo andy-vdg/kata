@@ -42,7 +42,8 @@ func resolveMode(requested string, configured bool) (searchMode, error) {
 
 // mergeRRF fuses two ranked legs with reciprocal rank fusion (k=60, equal
 // weights), deduping by issue id and unioning matched_in. Ties break by RRF
-// score desc, then issue id asc. The resulting Score is the RRF score.
+// score desc, then updated_at desc, then issue id asc. The resulting Score is
+// the RRF score.
 func mergeRRF(lexical, vector []db.SearchCandidate, limit int) []db.SearchCandidate {
 	type agg struct {
 		issue   db.Issue

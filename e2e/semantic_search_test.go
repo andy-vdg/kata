@@ -74,23 +74,22 @@ func TestE2E_SemanticSearch_HybridAndDegraded(t *testing.T) {
 	require.True(t, containsIssue(lexical, short),
 		"freshly created issue must be found lexically before reconcile: %+v", lexical)
 
-	// 2. Wait for the reconciler to embed the backlog. /health reports the
-	// reconciler's operator-visible state only when embeddings are configured;
-	// backlog == 0 means every dirty issue has a current-fingerprint vector.
-	waitForEmbeddingBacklogZero(t, client, url, daemonStderr)
-
-	// 3. A paraphrase whose tokens appear nowhere in the issue's title or body
+	// 2. A paraphrase whose tokens appear nowhere in the issue's title or body
 	// ("credential loop on returning users" vs "Login callback double-submits
 	// on Safari" / "A redirect race condition fires the auth callback twice")
 	// can only surface via the vector leg. First confirm lexical search finds
-	// nothing, isolating the semantic contribution, then assert the hybrid
-	// search surfaces the issue with mode=hybrid and "semantic" in matched_in.
+	// nothing, isolating the semantic contribution.
 	const paraphrase = "credential loop on returning users"
 	lexMiss := searchHybrid(t, client, url, pidStr, paraphrase, "lexical")
 	require.Falsef(t, containsIssue(lexMiss, short),
 		"paraphrase must NOT match lexically (isolates the semantic leg): %+v", lexMiss)
 
-	hybrid := searchHybrid(t, client, url, pidStr, paraphrase, "hybrid")
+	// 3. Poll the actual hybrid search until the reconciler has embedded the
+	// issue and the vector leg surfaces it. Asserting on the search behavior
+	// (rather than waiting for /health backlog==0) is immune to gauge timing:
+	// the reconciler's initial backlog==0 can read clean before the post-create
+	// wake has embedded anything, so a health wait can race ahead of the index.
+	hybrid := waitForSemanticHit(t, client, url, pidStr, paraphrase, short, daemonStderr)
 	require.Equal(t, "hybrid", hybrid.Mode, "explicit hybrid must run the vector leg: %+v", hybrid)
 	require.False(t, hybrid.Degraded, "embedder is up; hybrid must not be degraded: %+v", hybrid)
 	hit, ok := findHit(hybrid, short)
@@ -281,41 +280,54 @@ func createIssueWithBody(t *testing.T, client *http.Client, baseURL string, pid 
 	return parsed.Issue.ShortID
 }
 
-// waitForEmbeddingBacklogZero polls /health until the embeddings block reports
-// backlog == 0 (every dirty issue embedded) or fails after a timeout. It also
-// fails fast if the reconciler reports a persistent last_error, so a
-// misconfigured embedder surfaces as a clear message instead of a timeout.
-func waitForEmbeddingBacklogZero(t *testing.T, client *http.Client, baseURL string, daemonStderr *safeBuffer) {
+// waitForSemanticHit polls the real mode=hybrid search until the paraphrase
+// surfaces the target issue via the vector leg, then returns that response. It
+// asserts on observable search behavior rather than the /health backlog gauge,
+// so it is immune to gauge timing: the reconciler's pre-embed backlog can read
+// 0 before the post-create wake has embedded anything, which a backlog wait
+// would accept too early. The poll is deadline-bounded and, on timeout, reports
+// the last search response, the last /health snapshot, and daemon stderr so a
+// genuinely stuck embedder surfaces as a clear message instead of a bare
+// timeout.
+func waitForSemanticHit(t *testing.T, client *http.Client, baseURL, pidStr, query, shortID string, daemonStderr *safeBuffer) searchResult {
 	t.Helper()
 	deadline := time.Now().Add(15 * time.Second)
-	var last string
+	var lastSearch string
 	for time.Now().Before(deadline) {
-		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"/api/v1/health", nil)
-		require.NoError(t, err)
-		resp, err := client.Do(req) //nolint:gosec // G704: test-only unix socket, fixed URL
-		require.NoError(t, err)
-		raw, err := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		require.NoError(t, err)
-		var h struct {
-			Embeddings *struct {
-				Configured bool   `json:"configured"`
-				LastError  string `json:"last_error"`
-				Backlog    int64  `json:"backlog"`
-			} `json:"embeddings"`
-		}
-		require.NoErrorf(t, json.Unmarshal(raw, &h), "decode health: %s", raw)
-		require.NotNil(t, h.Embeddings, "configured daemon must report an embeddings block: %s", raw)
-		require.True(t, h.Embeddings.Configured, "embeddings block must report configured=true: %s", raw)
-		last = string(raw)
-		// A non-empty last_error after a successful embed is transient; only a
-		// definitive misconfiguration would stick. Backlog reaching 0 with at
-		// least one issue present means the reconciler embedded it.
-		if h.Embeddings.Backlog == 0 && h.Embeddings.LastError == "" {
-			return
+		status, body := searchStatus(t, client, baseURL, pidStr, query, "hybrid")
+		lastSearch = string(body)
+		if status == http.StatusOK {
+			var res searchResult
+			require.NoErrorf(t, json.Unmarshal(body, &res), "decode search response: %s", body)
+			if containsIssue(res, shortID) {
+				return res
+			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Fatalf("embedding backlog never drained to 0.\nlast /health: %s\ndaemon stderr: %s",
-		last, daemonStderr.String())
+	t.Fatalf("paraphrase %q never surfaced issue %s via the vector leg.\nlast search: %s\nlast /health: %s\ndaemon stderr: %s",
+		query, shortID, lastSearch, embeddingHealth(t, client, baseURL), daemonStderr.String())
+	return searchResult{}
+}
+
+// embeddingHealth fetches /health and returns the embeddings block as a string
+// for diagnostics when a semantic poll times out. It is best-effort: any error
+// is folded into the returned string rather than failing the test, since it
+// only runs on an already-failing path.
+func embeddingHealth(t *testing.T, client *http.Client, baseURL string) string {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"/api/v1/health", nil)
+	if err != nil {
+		return fmt.Sprintf("(health request error: %v)", err)
+	}
+	resp, err := client.Do(req) //nolint:gosec // G704: test-only unix socket, fixed URL
+	if err != nil {
+		return fmt.Sprintf("(health fetch error: %v)", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Sprintf("(health read error: %v)", err)
+	}
+	return string(raw)
 }

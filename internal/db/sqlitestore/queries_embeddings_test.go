@@ -147,6 +147,47 @@ func TestListEmbedTargetsRespectsLimit(t *testing.T) {
 	require.Len(t, targets, 2)
 }
 
+func TestSearchVectorRanksAndRespectsVisibility(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	proj := createProject(ctx, t, d, "spoke-project")
+	fp := "a" + repeat63
+
+	near := mkEmbeddingIssue(ctx, t, d, proj.ID, "near")
+	far := mkEmbeddingIssue(ctx, t, d, proj.ID, "far")
+	embed := func(iss db.Issue, v []float32) {
+		cr := contentRev(ctx, t, d, iss.ID)
+		require.NoError(t, d.UpsertIssueEmbedding(ctx, db.IssueEmbedding{
+			IssueID: iss.ID, EmbeddedContentRevision: cr, Fingerprint: fp, Dims: 2, Vector: v,
+		}))
+	}
+	embed(near, []float32{1, 0})
+	embed(far, []float32{0, 1})
+
+	// Query close to "near".
+	hits, err := d.SearchVector(ctx, proj.ID, []float32{1, 0}, fp, 10, false)
+	require.NoError(t, err)
+	require.Lenf(t, hits, 2, "both embedded issues should rank")
+	require.Equalf(t, near.ID, hits[0].Issue.ID, "the nearer vector must rank first")
+	require.Greaterf(t, hits[0].Score, hits[1].Score, "similarity must be strictly descending")
+	for _, h := range hits {
+		require.Equalf(t, []string{"semantic"}, h.MatchedIn, "matched_in must be the semantic leg")
+	}
+
+	// Soft-delete "near": it must drop out (visibility resolved live).
+	_, _, _, err = d.SoftDeleteIssue(ctx, near.ID, "tester")
+	require.NoError(t, err)
+	hits, err = d.SearchVector(ctx, proj.ID, []float32{1, 0}, fp, 10, false)
+	require.NoError(t, err)
+	require.Lenf(t, hits, 1, "a soft-deleted issue must not surface")
+	require.Equal(t, far.ID, hits[0].Issue.ID)
+
+	// A wrong-fingerprint query returns nothing (no cross-model compare).
+	hits, err = d.SearchVector(ctx, proj.ID, []float32{1, 0}, "b"+repeat63, 10, false)
+	require.NoError(t, err)
+	require.Emptyf(t, hits, "a different fingerprint must not match any vector")
+}
+
 func TestEmbeddingStats(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)

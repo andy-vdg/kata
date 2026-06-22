@@ -766,6 +766,10 @@ func (s *Store) SearchFTSAny(_ context.Context, _ int64, _ string, _ int, _ bool
 	return nil, ErrNotImplementedPhase3
 }
 
+func (s *Store) SearchVector(_ context.Context, _ int64, _ []float32, _ string, _ int, _ bool) ([]db.SearchCandidate, error) {
+	return nil, ErrNotImplementedPhase3
+}
+
 func (s *Store) SkipFederationQuarantine(_ context.Context, _ db.SkipFederationQuarantineParams) (db.FederationQuarantine, error) {
 	return db.FederationQuarantine{}, ErrNotImplementedPhase3
 }

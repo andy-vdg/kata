@@ -3,21 +3,33 @@ package sqlitestore
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
+	"sort"
 
 	"go.kenn.io/kata/internal/db"
 )
 
 // vectorToBytes serializes float32s little-endian. The schema CHECK requires
-// length(vector_bytes) = dims * 4, so the caller must pass len(v) == dims. The
-// inverse (bytesToVector) lands with SearchVector, its only consumer.
+// length(vector_bytes) = dims * 4, so the caller must pass len(v) == dims.
 func vectorToBytes(v []float32) []byte {
 	b := make([]byte, len(v)*4)
 	for i, f := range v {
 		binary.LittleEndian.PutUint32(b[i*4:], math.Float32bits(f))
 	}
 	return b
+}
+
+// bytesToVector is the little-endian inverse of vectorToBytes. A trailing
+// partial group (len not a multiple of 4) is dropped; the schema CHECK keeps
+// stored blobs aligned to dims*4, so this only guards against corruption.
+func bytesToVector(b []byte) []float32 {
+	v := make([]float32, len(b)/4)
+	for i := range v {
+		v[i] = math.Float32frombits(binary.LittleEndian.Uint32(b[i*4:]))
+	}
+	return v
 }
 
 // UpsertIssueEmbedding inserts or replaces the embedding row for an issue. The
@@ -98,3 +110,130 @@ func (d *Store) EmbeddingStats(ctx context.Context, projectID int64, fingerprint
 	}
 	return count, *maxUpdated, nil
 }
+
+// SearchVector returns up to k issues ranked by cosine similarity to queryVec,
+// scoped to projectID and the active fingerprint. Vectors are cached per
+// (project, fingerprint); the cache supplies candidates and similarities only.
+// Visibility and row data always come from a live join against issues, so
+// soft-delete/restore/purge can never surface a wrong result.
+func (d *Store) SearchVector(ctx context.Context, projectID int64, queryVec []float32, fingerprint string, k int, includeDeleted bool) ([]db.SearchCandidate, error) {
+	if k <= 0 {
+		k = 20
+	}
+	count, maxUpdated, err := d.EmbeddingStats(ctx, projectID, fingerprint)
+	if err != nil {
+		return nil, err
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	vecs, ok := d.vectorCache.get(projectID, fingerprint, count, maxUpdated)
+	if !ok {
+		vecs, err = d.loadVectors(ctx, projectID, fingerprint)
+		if err != nil {
+			return nil, err
+		}
+		d.vectorCache.put(projectID, fingerprint, count, maxUpdated, vecs)
+	}
+
+	// Rank all candidates by dot product (vectors are L2-normalized → cosine).
+	ranked := make([]scoredVec, 0, len(vecs))
+	for _, cv := range vecs {
+		ranked = append(ranked, scoredVec{issueID: cv.issueID, score: dot(queryVec, cv.vec)})
+	}
+	sortScoredVecDesc(ranked)
+
+	// Walk ranked candidates, resolving each against the live issues table
+	// until k visible rows are collected.
+	out := make([]db.SearchCandidate, 0, k)
+	for _, s := range ranked {
+		if len(out) >= k {
+			break
+		}
+		iss, err := d.liveIssue(ctx, s.issueID, includeDeleted)
+		if err != nil {
+			return nil, err
+		}
+		if iss == nil {
+			continue // purged or (when !includeDeleted) soft-deleted
+		}
+		out = append(out, db.SearchCandidate{Issue: *iss, Score: s.score, MatchedIn: []string{"semantic"}})
+	}
+	return out, nil
+}
+
+// loadVectors reads every stored vector for a project at the active fingerprint,
+// joined against issues so vectors for purged issues are excluded. Visibility
+// (soft-delete) is resolved later, per result, in liveIssue.
+func (d *Store) loadVectors(ctx context.Context, projectID int64, fingerprint string) ([]cachedVec, error) {
+	rows, err := d.QueryContext(ctx, `
+		SELECT e.issue_id, e.vector_bytes
+		FROM issue_embeddings e
+		JOIN issues i ON i.id = e.issue_id
+		WHERE i.project_id = ? AND e.embed_fingerprint = ?`,
+		projectID, fingerprint)
+	if err != nil {
+		return nil, fmt.Errorf("load vectors: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []cachedVec
+	for rows.Next() {
+		var id int64
+		var b []byte
+		if err := rows.Scan(&id, &b); err != nil {
+			return nil, fmt.Errorf("scan vector: %w", err)
+		}
+		out = append(out, cachedVec{issueID: id, vec: bytesToVector(b)})
+	}
+	return out, rows.Err()
+}
+
+// liveIssue returns the issue if visible, or nil if absent/soft-deleted (when
+// includeDeleted is false). Uses the shared issueSelect for full row data.
+func (d *Store) liveIssue(ctx context.Context, id int64, includeDeleted bool) (*db.Issue, error) {
+	where := ` WHERE i.id = ?`
+	if !includeDeleted {
+		where += ` AND i.deleted_at IS NULL`
+	}
+	iss, err := scanIssue(d.QueryRowContext(ctx, issueSelect+where, id))
+	if errorsIsNotFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &iss, nil
+}
+
+// scoredVec pairs an issue id with its similarity score for ranking.
+type scoredVec struct {
+	issueID int64
+	score   float64
+}
+
+// sortScoredVecDesc orders by descending score, breaking ties by ascending
+// issue id so results are deterministic.
+func sortScoredVecDesc(xs []scoredVec) {
+	sort.SliceStable(xs, func(i, j int) bool {
+		if xs[i].score != xs[j].score {
+			return xs[i].score > xs[j].score
+		}
+		return xs[i].issueID < xs[j].issueID
+	})
+}
+
+func dot(a, b []float32) float64 {
+	if len(a) != len(b) {
+		return 0
+	}
+	var s float64
+	for i := range a {
+		s += float64(a[i]) * float64(b[i])
+	}
+	return s
+}
+
+// errorsIsNotFound reports whether err is db.ErrNotFound. scanIssue returns
+// that sentinel when a row is absent; liveIssue treats it as "not visible"
+// rather than a query failure.
+func errorsIsNotFound(err error) bool { return errors.Is(err, db.ErrNotFound) }

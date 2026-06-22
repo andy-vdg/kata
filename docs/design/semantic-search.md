@@ -61,9 +61,9 @@ Credential handling follows the existing bearer-token trust model:
 - Plaintext HTTP targets follow the same safety ladder as other bearer
   targets: HTTPS always allowed; HTTP to loopback allowed; HTTP to literal
   non-public IPs only with `trust_private_network = true` in the embeddings
-  section; anything else (public IPs, DNS hostnames) requires HTTPS unless
-  the operator sets the section's `allow_insecure = true` escape hatch,
-  mirroring the daemon catalog's per-target semantics.
+  section; anything else (public IPs, DNS hostnames) requires HTTPS. v1 has
+  no public-plaintext escape hatch — point such targets at an HTTPS endpoint
+  or an SSH tunnel.
 
 ## Architecture
 
@@ -104,8 +104,7 @@ model    = "nomic-embed-text"
 # api_key      = "..."          # or api_key_env = "SOME_VAR"; mutually exclusive
 # fingerprint_salt = ""         # bump to force re-embed when weights change
 # trust_private_network = false # plaintext HTTP to literal non-public IPs
-# allow_insecure = false        # per-target opt-out of plaintext safety checks
-# timeout, batch_size, dims     # defaulted; override rarely
+# timeout_seconds, batch_size, dims  # defaulted; override rarely
 ```
 
 - Presence of the section enables the feature. `base_url` and `model` are

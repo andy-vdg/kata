@@ -106,12 +106,10 @@ func (r *Reconciler) Run(ctx context.Context) error {
 		case <-r.wake:
 		case <-timer.C:
 		}
-		err := r.reconcileOnce(ctx)
-		switch {
-		case err == nil:
+		if err := r.reconcileOnce(ctx); err == nil {
 			backoff = r.cfg.MinBackoff
 			timer.Reset(r.cfg.SweepEvery)
-		default:
+		} else {
 			backoff = r.nextBackoff(backoff, err)
 			timer.Reset(backoff)
 		}

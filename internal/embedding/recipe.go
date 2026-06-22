@@ -39,6 +39,7 @@ func EmbedText(title, body string) string {
 // (including NUL), so no two distinct component tuples can collide.
 func Fingerprint(model string, dims int, salt string) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "v%d|%d:%s|%d|%d:%s", RecipeVersion, len(model), model, dims, len(salt), salt)
+	// hash.Hash.Write never returns an error, so the Fprintf result is discarded.
+	_, _ = fmt.Fprintf(h, "v%d|%d:%s|%d|%d:%s", RecipeVersion, len(model), model, dims, len(salt), salt)
 	return hex.EncodeToString(h.Sum(nil))
 }

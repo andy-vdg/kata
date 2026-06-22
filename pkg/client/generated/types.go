@@ -945,6 +945,13 @@ func (e EditIssueResponseBody) Validate() error {
 	return errors
 }
 
+type EmbeddingsHealth struct {
+	Backlog       int64      `json:"backlog"`
+	Configured    bool       `json:"configured"`
+	LastError     *string    `json:"last_error,omitempty"`
+	LastSuccessAt *time.Time `json:"last_success_at,omitempty"`
+}
+
 type EnableProjectFederationRequestBody struct {
 	Actor *string `json:"actor,omitempty"`
 }
@@ -1252,17 +1259,41 @@ func (f FederationViolationSummary) Validate() error {
 }
 
 type HealthResponseBody struct {
-	APISchemaVersion *string   `json:"api_schema_version,omitempty"`
-	DBPath           string    `json:"db_path" validate:"required"`
-	Ok               bool      `json:"ok"`
-	SchemaVersion    int64     `json:"schema_version"`
-	StartedAt        time.Time `json:"started_at" validate:"required"`
-	Uptime           string    `json:"uptime" validate:"required"`
-	Version          string    `json:"version" validate:"required"`
+	APISchemaVersion *string           `json:"api_schema_version,omitempty"`
+	DBPath           string            `json:"db_path" validate:"required"`
+	Embeddings       *EmbeddingsHealth `json:"embeddings,omitempty"`
+	Ok               bool              `json:"ok"`
+	SchemaVersion    int64             `json:"schema_version"`
+	StartedAt        time.Time         `json:"started_at" validate:"required"`
+	Uptime           string            `json:"uptime" validate:"required"`
+	Version          string            `json:"version" validate:"required"`
 }
 
 func (h HealthResponseBody) Validate() error {
-	return runtime.ConvertValidatorError(typesValidator.Struct(h))
+	var errors runtime.ValidationErrors
+	if err := typesValidator.Var(h.DBPath, "required"); err != nil {
+		errors = errors.Append("DBPath", err)
+	}
+	if h.Embeddings != nil {
+		if v, ok := any(h.Embeddings).(runtime.Validator); ok {
+			if err := v.Validate(); err != nil {
+				errors = errors.Append("Embeddings", err)
+			}
+		}
+	}
+	if err := typesValidator.Var(h.StartedAt, "required"); err != nil {
+		errors = errors.Append("StartedAt", err)
+	}
+	if err := typesValidator.Var(h.Uptime, "required"); err != nil {
+		errors = errors.Append("Uptime", err)
+	}
+	if err := typesValidator.Var(h.Version, "required"); err != nil {
+		errors = errors.Append("Version", err)
+	}
+	if len(errors) == 0 {
+		return nil
+	}
+	return errors
 }
 
 type ImportBatchResult struct {

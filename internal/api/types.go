@@ -31,14 +31,26 @@ type PingResponse struct {
 // than a parse failure. Current daemons always populate it.
 type HealthResponse struct {
 	Body struct {
-		OK               bool      `json:"ok"`
-		DBPath           string    `json:"db_path"`
-		SchemaVersion    int       `json:"schema_version"`
-		APISchemaVersion string    `json:"api_schema_version,omitempty"`
-		Version          string    `json:"version"`
-		Uptime           string    `json:"uptime"`
-		StartedAt        time.Time `json:"started_at"`
+		OK               bool              `json:"ok"`
+		DBPath           string            `json:"db_path"`
+		SchemaVersion    int               `json:"schema_version"`
+		APISchemaVersion string            `json:"api_schema_version,omitempty"`
+		Version          string            `json:"version"`
+		Uptime           string            `json:"uptime"`
+		StartedAt        time.Time         `json:"started_at"`
+		Embeddings       *EmbeddingsHealth `json:"embeddings,omitempty"`
 	}
+}
+
+// EmbeddingsHealth is the semantic-search reconciler's operator-visible state
+// on the wire. It is present only when the daemon has embeddings configured;
+// an absent block means semantic search is disabled. It mirrors
+// daemon.ReconcilerHealth.
+type EmbeddingsHealth struct {
+	Configured    bool       `json:"configured"`
+	LastSuccessAt *time.Time `json:"last_success_at,omitempty"`
+	LastError     string     `json:"last_error,omitempty"`
+	Backlog       int64      `json:"backlog"`
 }
 
 // InstanceResponse mirrors /api/v1/instance. Surfaces the local kata

@@ -3,48 +3,24 @@ package sqlitestore_test
 import (
 	"context"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSchemaHasEmbeddingSurface(t *testing.T) {
-	ctx := context.Background()
-	d := openTestDB(t) // fresh in-memory/temp Store
+	d := openTestDB(t)
 
-	// issues.content_revision exists.
-	var dflt int
-	row := d.QueryRowContext(ctx,
-		`SELECT count(*) FROM pragma_table_info('issues') WHERE name='content_revision'`)
-	if err := row.Scan(&dflt); err != nil {
-		t.Fatalf("pragma_table_info issues: %v", err)
-	}
-	if dflt != 1 {
-		t.Fatalf("issues.content_revision missing")
-	}
+	// issues.content_revision exists and is NOT NULL.
+	assertColumn(t, d, "issues", "content_revision", "INTEGER", true)
 
-	// issue_embeddings table exists with expected columns.
-	want := map[string]bool{
-		"issue_id": false, "embedded_content_revision": false, "embed_fingerprint": false,
-		"dims": false, "vector_bytes": false, "updated_at": false,
-	}
-	rows, err := d.QueryContext(ctx, `SELECT name FROM pragma_table_info('issue_embeddings')`)
-	if err != nil {
-		t.Fatalf("pragma_table_info issue_embeddings: %v", err)
-	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var n string
-		if err := rows.Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		if _, ok := want[n]; ok {
-			want[n] = true
-		}
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	for col, seen := range want {
-		if !seen {
-			t.Errorf("issue_embeddings missing column %q", col)
-		}
-	}
+	// issue_embeddings table exists with its six expected columns.
+	assertSchemaObject(t, d, "issue_embeddings")
+	var n int
+	require.NoError(t, d.QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM pragma_table_info('issue_embeddings')
+		   WHERE name IN ('issue_id','embedded_content_revision','embed_fingerprint',
+		                  'dims','vector_bytes','updated_at')`,
+	).Scan(&n))
+	assert.Equal(t, 6, n, "issue_embeddings must expose all six expected columns")
 }

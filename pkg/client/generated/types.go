@@ -2701,12 +2701,18 @@ func (s SearchHit) Validate() error {
 }
 
 type SearchResponseBody struct {
-	Query   string      `json:"query" validate:"required"`
-	Results []SearchHit `json:"results,omitempty" validate:"required"`
+	Degraded       *bool       `json:"degraded,omitempty"`
+	DegradedReason *string     `json:"degraded_reason,omitempty"`
+	Mode           string      `json:"mode" validate:"required"`
+	Query          string      `json:"query" validate:"required"`
+	Results        []SearchHit `json:"results,omitempty" validate:"required"`
 }
 
 func (s SearchResponseBody) Validate() error {
 	var errors runtime.ValidationErrors
+	if err := typesValidator.Var(s.Mode, "required"); err != nil {
+		errors = errors.Append("Mode", err)
+	}
 	if err := typesValidator.Var(s.Query, "required"); err != nil {
 		errors = errors.Append("Query", err)
 	}

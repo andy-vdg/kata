@@ -2738,6 +2738,12 @@ components:
       type: object
     SearchResponseBody:
       properties:
+        degraded:
+          type: boolean
+        degraded_reason:
+          type: string
+        mode:
+          type: string
         query:
           type: string
         results:
@@ -2747,6 +2753,7 @@ components:
           type: array
       required:
         - query
+        - mode
         - results
       type: object
     ShowIssueResponseBody:
@@ -5151,6 +5158,16 @@ paths:
           name: include_deleted
           schema:
             type: boolean
+        - explode: false
+          in: query
+          name: mode
+          schema:
+            enum:
+              - auto
+              - lexical
+              - hybrid
+              - semantic
+            type: string
       responses:
         "200":
           content:

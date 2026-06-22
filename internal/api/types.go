@@ -970,27 +970,44 @@ type DigestResponse struct {
 	}
 }
 
-// SearchRequest is GET /api/v1/projects/{id}/search?q=...&limit=...&include_deleted=...
+// SearchRequest is GET /api/v1/projects/{id}/search?q=...&limit=...&include_deleted=...&mode=...
+//
+// Mode selects the search strategy. "auto" (or empty) resolves to hybrid when
+// embeddings are configured, else lexical. "lexical" forces FTS-only.
+// "hybrid"/"semantic" require [search.embeddings]: an unconfigured daemon
+// returns 400, and a vector-leg failure returns 503 rather than silently
+// degrading.
 type SearchRequest struct {
 	ProjectID      int64  `path:"project_id" required:"true"`
 	Query          string `query:"q" required:"true"`
 	Limit          int    `query:"limit,omitempty"`
 	IncludeDeleted bool   `query:"include_deleted,omitempty"`
+	Mode           string `query:"mode,omitempty" enum:"auto,lexical,hybrid,semantic"`
 }
 
-// SearchHit is one row in SearchResponse. Score is the negated raw BM25
-// (higher = better match), MatchedIn is the FTS columns that contributed.
+// SearchHit is one row in SearchResponse. Score is mode-scoped — negated raw
+// BM25 (lexical, higher = better match), the RRF fusion score (hybrid), or
+// cosine similarity (semantic). MatchedIn lists the contributing sources: FTS
+// column names for the lexical leg plus "semantic" when the vector leg matched.
 type SearchHit struct {
 	Issue     db.Issue `json:"issue"`
 	Score     float64  `json:"score"`
 	MatchedIn []string `json:"matched_in"`
 }
 
-// SearchResponse mirrors spec §4.10.
+// SearchResponse mirrors spec §4.10. Mode is the effective mode actually run
+// (always present). Degraded is true only when an auto/hybrid request fell back
+// to lexical because the vector leg could not run; DegradedReason carries the
+// underlying cause. Both degraded fields are omitted on the baseline path so an
+// unconfigured daemon's response is byte-identical to its pre-semantic shape
+// apart from the always-present mode echo.
 type SearchResponse struct {
 	Body struct {
-		Query   string      `json:"query"`
-		Results []SearchHit `json:"results"`
+		Query          string      `json:"query"`
+		Mode           string      `json:"mode"`
+		Degraded       bool        `json:"degraded,omitempty"`
+		DegradedReason string      `json:"degraded_reason,omitempty"`
+		Results        []SearchHit `json:"results"`
 	}
 }
 

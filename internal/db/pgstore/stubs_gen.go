@@ -310,6 +310,12 @@ func (s *Store) ExportIssueClaims(_ context.Context, _ db.ExportFilter) iter.Seq
 	}
 }
 
+func (s *Store) ExportIssueEmbeddings(_ context.Context, _ db.ExportFilter) iter.Seq2[db.IssueEmbeddingExport, error] {
+	return func(yield func(db.IssueEmbeddingExport, error) bool) {
+		yield(db.IssueEmbeddingExport{}, ErrNotImplementedPhase3)
+	}
+}
+
 func (s *Store) ExportIssueLabels(_ context.Context, _ db.ExportFilter) iter.Seq2[db.IssueLabelExport, error] {
 	return func(yield func(db.IssueLabelExport, error) bool) {
 		yield(db.IssueLabelExport{}, ErrNotImplementedPhase3)

@@ -226,6 +226,7 @@ type Storage interface {
 	ExportProjectAliases(ctx context.Context, f ExportFilter) iter.Seq2[AliasExport, error]
 	ExportRecurrences(ctx context.Context, f ExportFilter) iter.Seq2[RecurrenceExport, error]
 	ExportIssues(ctx context.Context, f ExportFilter) iter.Seq2[IssueExport, error]
+	ExportIssueEmbeddings(ctx context.Context, f ExportFilter) iter.Seq2[IssueEmbeddingExport, error]
 	ExportComments(ctx context.Context, f ExportFilter) iter.Seq2[CommentExport, error]
 	ExportIssueLabels(ctx context.Context, f ExportFilter) iter.Seq2[IssueLabelExport, error]
 	ExportLinks(ctx context.Context, f ExportFilter) iter.Seq2[LinkExport, error]

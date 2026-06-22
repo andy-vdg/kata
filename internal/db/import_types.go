@@ -41,6 +41,7 @@ type ImportRecord struct {
 	Alias                *AliasExport
 	Recurrence           *RecurrenceExport
 	Issue                *IssueExport
+	IssueEmbedding       *IssueEmbeddingExport
 	Comment              *CommentExport
 	Label                *IssueLabelExport
 	Link                 *LinkExport
@@ -66,6 +67,7 @@ const (
 	ImportKindProjectAlias         = "project_alias"
 	ImportKindRecurrence           = "recurrence"
 	ImportKindIssue                = "issue"
+	ImportKindIssueEmbedding       = "issue_embedding"
 	ImportKindComment              = "comment"
 	ImportKindIssueLabel           = "issue_label"
 	ImportKindLink                 = "link"
@@ -94,6 +96,7 @@ func (r ImportRecord) Validate() error {
 		{ImportKindProjectAlias, r.Alias != nil},
 		{ImportKindRecurrence, r.Recurrence != nil},
 		{ImportKindIssue, r.Issue != nil},
+		{ImportKindIssueEmbedding, r.IssueEmbedding != nil},
 		{ImportKindComment, r.Comment != nil},
 		{ImportKindIssueLabel, r.Label != nil},
 		{ImportKindLink, r.Link != nil},

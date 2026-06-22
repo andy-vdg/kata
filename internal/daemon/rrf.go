@@ -75,9 +75,14 @@ func mergeRRF(lexical, vector []db.SearchCandidate, limit int) []db.SearchCandid
 		sort.Strings(matched)
 		out = append(out, db.SearchCandidate{Issue: a.issue, Score: a.score, MatchedIn: matched})
 	}
+	// Deterministic order: RRF score desc, then most-recently-updated first,
+	// then issue id asc as the final tiebreak (matches the design note).
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Score != out[j].Score {
 			return out[i].Score > out[j].Score
+		}
+		if !out[i].Issue.UpdatedAt.Equal(out[j].Issue.UpdatedAt) {
+			return out[i].Issue.UpdatedAt.After(out[j].Issue.UpdatedAt)
 		}
 		return out[i].Issue.ID < out[j].Issue.ID
 	})

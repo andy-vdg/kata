@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kata/internal/db"
@@ -66,6 +67,23 @@ func TestMergeRRFTieBreaksByLowerIssueID(t *testing.T) {
 	require.InDelta(t, merged[0].Score, merged[1].Score, 1e-12, "scores must be an exact RRF tie")
 	require.Equalf(t, int64(3), merged[0].Issue.ID, "tie must break to the lower issue id")
 	require.Equal(t, int64(7), merged[1].Issue.ID)
+}
+
+func TestMergeRRFTieBreaksByMostRecentlyUpdated(t *testing.T) {
+	// Both issues score 1/(60+0+1): older only in lexical at rank 0, newer only
+	// in vector at rank 0. The design-note tiebreak is updated_at desc, so the
+	// newer issue must sort first even though it has the higher id (which would
+	// lose under the id-asc final tiebreak). Fails if updated_at is ignored.
+	older := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	newer := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	lex := []db.SearchCandidate{{Issue: db.Issue{ID: 1, UpdatedAt: older}, MatchedIn: []string{"title"}}}
+	vec := []db.SearchCandidate{{Issue: db.Issue{ID: 2, UpdatedAt: newer}, MatchedIn: []string{"semantic"}}}
+	merged := mergeRRF(lex, vec, 10)
+
+	require.Len(t, merged, 2)
+	require.InDelta(t, merged[0].Score, merged[1].Score, 1e-12, "scores must be an exact RRF tie")
+	require.Equalf(t, int64(2), merged[0].Issue.ID, "more-recently-updated issue must sort first")
+	require.Equal(t, int64(1), merged[1].Issue.ID)
 }
 
 func TestResolveMode(t *testing.T) {

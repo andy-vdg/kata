@@ -161,10 +161,19 @@ and title/body edits do not touch it — `editIssue` bumps only `updated_at`
 (`internal/db/sqlitestore/queries.go`). Reusing `revision` would therefore
 miss the very edits that matter, and broadening it would silently change
 metadata optimistic-concurrency semantics. So this design adds a dedicated
-`issues.content_revision` — monotonic, bumped by `editIssue` only when title
-or body actually change — and leaves `revision` untouched. Timestamps are
-not used either: `updated_at` also moves on non-content mutations (status
-flips), and its millisecond precision can collapse same-instant edits.
+`issues.content_revision`, monotonic, bumped by every writer that actually
+changes title or body and by nothing else. Today those writers are
+`EditIssue`, `EditIssueAtomic` (the active PATCH route,
+`internal/daemon/handlers_issues.go`), and issue import
+(`updateImportedIssue`, `internal/db/sqlitestore/imports.go`). The two
+interactive paths already funnel field changes through
+`issueFieldUpdatePlan`, which is the natural bump site — it must distinguish
+a title/body change from an owner-only edit, since owner does not bump —
+while import bumps in its direct `UPDATE`. Owner, priority, status,
+comments, links, and metadata all leave `content_revision` unchanged, and
+`revision` is left untouched. Timestamps are not used either: `updated_at`
+also moves on non-content mutations (status flips), and its millisecond
+precision can collapse same-instant edits.
 
 Soft-deleted issues are excluded from targets while deleted; their rows are
 kept so restore costs nothing. Purge removes rows via `ON DELETE CASCADE`.
@@ -229,9 +238,9 @@ CREATE TABLE issue_embeddings (
 The column is `vector_bytes`, not `vector`, so nothing reads as pgvector's
 `vector(N)` type. The table is canonical schema on both backends and rides a
 schema-version bump that also adds the `issues.content_revision` column
-(default 0) and the `editIssue` bump above: SQLite upgrades via the usual
-JSONL cutover; PostgreSQL follows the existing operator-migration policy
-(`internal/db/pgstore/open.go` refuses version mismatches).
+(default 0) and the title/body writer bumps above: SQLite upgrades via the
+usual JSONL cutover; PostgreSQL follows the existing operator-migration
+policy (`internal/db/pgstore/open.go` refuses version mismatches).
 
 pgvector is deliberately absent from the canonical schema. PostgreSQL
 deployments that never enable embeddings carry no extension requirement.
@@ -244,6 +253,17 @@ import. Embeddings are expensive derived state — re-embedding a large
 project costs real API calls and time — so they earn export the way cheap,
 trigger-rebuilt FTS state does not. Live-only exports emit an embedding row
 only when its parent issue is in the export set.
+
+For the export to actually save work, the issue's `content_revision` must
+travel with it. `IssueExport` (`internal/db/export_types.go`) carries
+`content_revision` alongside the existing `revision`, and import restores
+it. Otherwise an imported issue defaults to `content_revision = 0` while its
+embedding row carries the revision it was embedded at, so the dirty
+predicate would mark every imported-and-previously-edited issue stale and
+re-embed it on the first sweep — exactly the cost export is meant to avoid.
+Embedding import also validates `embedded_content_revision <=
+issues.content_revision`; a row that fails (a corrupt or hand-edited dump)
+is dropped and left for the reconciler rather than trusted.
 
 ### SQLite vector execution: brute force behind a cache
 
@@ -372,14 +392,19 @@ The CLI has three output surfaces, each handled to a precise shape:
 - `--json`: the response envelope is passed through unchanged
   (`printSearchResults` JSON branch, `cmd/kata/search.go`), so `mode`,
   `degraded`, and `degraded_reason` appear automatically.
-- Agent mode (`OK search ...` status line + `key=value` rows,
-  `cmd/kata/search.go:116`) is a machine surface and follows the same
-  explicit-evolution rule as the HTTP API. The status line always gains
-  `mode=<mode>` (and `degraded=<reason>` when degraded); rows gain
-  `semantic` in their `matched=` list when the vector leg contributed. This
-  is a real shape change to agent output — the compatibility test pins the
-  new shape, including `mode=lexical` on an unconfigured daemon, and pins
-  that lexical score semantics (negated BM25) are unchanged.
+- Agent mode (`cmd/kata/search.go:116`) is a machine surface governed by
+  `docs/reference/agent-output.md`, where field order is part of the
+  contract and new fields may be *appended* without an `agent_format`
+  version bump. So `mode` is appended after the existing header fields —
+  exact order `OK search count=<n> query=<q> mode=<mode>` — and
+  `degraded=<reason>` follows only when the query degraded (nullable fields
+  are omitted when absent, per the contract). Result rows gain `semantic` in
+  their comma-separated `matched=` list when the vector leg contributed.
+  Because `count` and `query` keep their names, positions, and meanings,
+  this is purely additive and `agent_format` stays `1`; the HTTP API is what
+  takes the `api_schema_version` bump, since its JSON envelope always carries
+  `mode`. The compatibility test pins the appended field order, `mode=lexical`
+  on an unconfigured daemon, and unchanged lexical score semantics.
 - Human mode (`%-8s  %.2f  %-8s  %s  (%s)` per row, `cmd/kata/search.go:142`)
   is an ergonomic surface, so lexical output stays byte-identical to today —
   no header, `%.2f` — and is pinned by the compatibility test. Hybrid and
@@ -417,11 +442,14 @@ TDD throughout (red, green, refactor). Highlights, not an exhaustive list:
   Phase 2): upsert round-trips including CHECK violations (dims, vector
   length, fingerprint length); the three dirty predicates (missing,
   fingerprint mismatch, `content_revision` mismatch); that `content_revision`
-  bumps on title/body edits but not on status flips or comment adds;
-  fingerprint filtering; visibility joins under soft-delete/restore/purge;
-  exact top-k refill with deleted-heavy caches; the fingerprint-scoped cache
-  key and freshness probe; JSONL round-trip by UID including live-only
-  exclusion of unexported parents.
+  bumps via every title/body writer (`EditIssue`, `EditIssueAtomic`, import)
+  but not on owner-only edits, status flips, or comment adds; fingerprint
+  filtering; visibility joins under soft-delete/restore/purge; exact top-k
+  refill with deleted-heavy caches; the fingerprint-scoped cache key and
+  freshness probe; JSONL round-trip carrying `content_revision` so a
+  previously-edited issue's imported embedding is not falsely stale, plus the
+  `embedded_content_revision <= content_revision` validation dropping bad
+  rows; live-only exclusion of unexported parents.
 - Daemon: reconciler against a fake embedder (backfill, nudge debounce,
   model-swap gradual migration, backoff classes, health fields); handler
   mode-resolution matrix (hung embedder returns FTS results degraded;

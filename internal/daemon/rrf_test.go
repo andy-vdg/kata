@@ -52,6 +52,7 @@ func TestResolveMode(t *testing.T) {
 		{"hybrid", false, modeLexical, true},   // 400
 		{"semantic", false, modeLexical, true}, // 400
 		{"hybrid", true, modeHybrid, false},
+		{"semantic", true, modeSemantic, false},
 		{"bogus", true, modeLexical, true},
 	}
 	for _, tc := range cases {

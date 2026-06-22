@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -42,7 +43,7 @@ func TestEmbedNormalizesVectors(t *testing.T) {
 	}
 }
 
-func TestEmbedDimsMismatchIsDefinitive(t *testing.T) {
+func TestEmbedDimsMismatchErrors(t *testing.T) {
 	srv := newFakeServer(t, 200, `{"data":[{"embedding":[1,2,3]}]}`, "")
 	defer srv.Close()
 	c, _ := New(Config{BaseURL: srv.URL, Model: "m", Dims: 2})
@@ -77,6 +78,59 @@ func TestEmbed429CarriesRetryAfter(t *testing.T) {
 	}
 	if apiErr.RetryAfter != 7*time.Second {
 		t.Fatalf("RetryAfter = %v, want 7s", apiErr.RetryAfter)
+	}
+}
+
+func TestEmbedBatchesPreserveOrder(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/embeddings" {
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+		calls++
+		var req struct {
+			Model string   `json:"model"`
+			Input []string `json:"input"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		// Encode each input's position into a distinct raw vector so the test
+		// can verify global ordering even though the server sees only one batch
+		// per call. Input "n" -> raw vector [n+1, 1].
+		data := make([]map[string]any, len(req.Input))
+		for i, s := range req.Input {
+			n, err := strconv.Atoi(s)
+			if err != nil {
+				t.Errorf("input %q not an integer: %v", s, err)
+			}
+			data[i] = map[string]any{"embedding": []float32{float32(n + 1), 1}}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+	}))
+	defer srv.Close()
+
+	c, err := New(Config{BaseURL: srv.URL, Model: "m", Dims: 2, BatchSize: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs := []string{"0", "1", "2", "3", "4"}
+	vecs, err := c.Embed(context.Background(), inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vecs) != len(inputs) {
+		t.Fatalf("got %d vectors, want %d", len(vecs), len(inputs))
+	}
+	// 5 inputs at BatchSize 2 -> ceil(5/2) = 3 HTTP calls.
+	if calls != 3 {
+		t.Fatalf("server received %d calls, want 3", calls)
+	}
+	for i := range inputs {
+		want := normalize([]float32{float32(i + 1), 1})
+		if math.Abs(float64(vecs[i][0]-want[0])) > 1e-6 || math.Abs(float64(vecs[i][1]-want[1])) > 1e-6 {
+			t.Fatalf("vec[%d] = %v, want %v (out of order or wrong batch)", i, vecs[i], want)
+		}
 	}
 }
 

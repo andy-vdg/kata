@@ -144,13 +144,17 @@ func (d *Store) SearchVector(ctx context.Context, projectID int64, queryVec []fl
 	sortScoredVecDesc(ranked)
 
 	// Walk ranked candidates, resolving each against the live issues table
-	// until k visible rows are collected.
+	// until k visible rows are collected. This is a deliberate N+1: one live
+	// lookup per surviving candidate, bounded by k (the walk stops once k
+	// visible rows are collected). Acceptable at brute-force scale; a batched
+	// WHERE id IN (...) resolve is a future option if k or the survivor count
+	// grows large.
 	out := make([]db.SearchCandidate, 0, k)
 	for _, s := range ranked {
 		if len(out) >= k {
 			break
 		}
-		iss, err := d.liveIssue(ctx, s.issueID, includeDeleted)
+		iss, err := d.liveIssue(ctx, projectID, s.issueID, includeDeleted)
 		if err != nil {
 			return nil, err
 		}
@@ -189,13 +193,17 @@ func (d *Store) loadVectors(ctx context.Context, projectID int64, fingerprint st
 }
 
 // liveIssue returns the issue if visible, or nil if absent/soft-deleted (when
-// includeDeleted is false). Uses the shared issueSelect for full row data.
-func (d *Store) liveIssue(ctx context.Context, id int64, includeDeleted bool) (*db.Issue, error) {
-	where := ` WHERE i.id = ?`
+// includeDeleted is false). Uses the shared issueSelect for full row data. The
+// project filter is defense-in-depth: callers already scope candidate
+// retrieval by project, but binding i.project_id here — matching SearchFTS —
+// enforces the cross-project invariant at the point of trust, so a foreign id
+// can never resolve.
+func (d *Store) liveIssue(ctx context.Context, projectID, id int64, includeDeleted bool) (*db.Issue, error) {
+	where := ` WHERE i.id = ? AND i.project_id = ?`
 	if !includeDeleted {
 		where += ` AND i.deleted_at IS NULL`
 	}
-	iss, err := scanIssue(d.QueryRowContext(ctx, issueSelect+where, id))
+	iss, err := scanIssue(d.QueryRowContext(ctx, issueSelect+where, id, projectID))
 	if errorsIsNotFound(err) {
 		return nil, nil
 	}

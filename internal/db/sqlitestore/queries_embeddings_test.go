@@ -188,6 +188,77 @@ func TestSearchVectorRanksAndRespectsVisibility(t *testing.T) {
 	require.Emptyf(t, hits, "a different fingerprint must not match any vector")
 }
 
+func TestSearchVectorIsolatesProjects(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	projA := createProject(ctx, t, d, "spoke-project")
+	projB := createProject(ctx, t, d, "hub-project")
+	fp := "a" + repeat63
+
+	// Same fingerprint, same vector, one issue in each project. The cosine
+	// scores are identical, so only the project scope can separate them.
+	issA := mkEmbeddingIssue(ctx, t, d, projA.ID, "shared-A")
+	issB := mkEmbeddingIssue(ctx, t, d, projB.ID, "shared-B")
+	embed := func(iss db.Issue, v []float32) {
+		cr := contentRev(ctx, t, d, iss.ID)
+		require.NoError(t, d.UpsertIssueEmbedding(ctx, db.IssueEmbedding{
+			IssueID: iss.ID, EmbeddedContentRevision: cr, Fingerprint: fp, Dims: 2, Vector: v,
+		}))
+	}
+	embed(issA, []float32{1, 0})
+	embed(issB, []float32{1, 0})
+
+	// A search scoped to project A returns only A's issue, never B's.
+	hits, err := d.SearchVector(ctx, projA.ID, []float32{1, 0}, fp, 10, false)
+	require.NoError(t, err)
+	require.Lenf(t, hits, 1, "project A search must see exactly one issue")
+	require.Equalf(t, issA.ID, hits[0].Issue.ID, "project A search must return A's issue")
+
+	// And the reverse: a search scoped to project B returns only B's issue.
+	hits, err = d.SearchVector(ctx, projB.ID, []float32{1, 0}, fp, 10, false)
+	require.NoError(t, err)
+	require.Lenf(t, hits, 1, "project B search must see exactly one issue")
+	require.Equalf(t, issB.ID, hits[0].Issue.ID, "project B search must return B's issue")
+}
+
+func TestSearchVectorRefillsPastSoftDeletedTopHits(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	proj := createProject(ctx, t, d, "spoke-project")
+	fp := "a" + repeat63
+
+	// Five issues with strictly decreasing similarity to the query [1, 0]:
+	// the dot product with [1, 0] is just the first component, so issues[0]
+	// is the closest and issues[4] the farthest.
+	firstComponents := []float32{1.0, 0.9, 0.8, 0.7, 0.6}
+	issues := make([]db.Issue, len(firstComponents))
+	for i, x := range firstComponents {
+		iss := mkEmbeddingIssue(ctx, t, d, proj.ID, "issue")
+		issues[i] = iss
+		cr := contentRev(ctx, t, d, iss.ID)
+		require.NoError(t, d.UpsertIssueEmbedding(ctx, db.IssueEmbedding{
+			IssueID: iss.ID, EmbeddedContentRevision: cr, Fingerprint: fp, Dims: 2,
+			Vector: []float32{x, float32(math.Sqrt(1 - float64(x)*float64(x)))},
+		}))
+	}
+
+	// Soft-delete the three closest (top-ranked) issues. With k=2, a naive
+	// walk that stopped at the first two ranked candidates would return zero
+	// live rows; the refill walk must continue past the deleted top hits.
+	for i := 0; i < 3; i++ {
+		_, _, _, err := d.SoftDeleteIssue(ctx, issues[i].ID, "tester")
+		require.NoError(t, err)
+	}
+
+	hits, err := d.SearchVector(ctx, proj.ID, []float32{1, 0}, fp, 2, false)
+	require.NoError(t, err)
+	require.Lenf(t, hits, 2, "refill must return exactly k live rows past the soft-deleted top hits")
+	// The two surviving issues, in rank order: issues[3] (0.7) then issues[4] (0.6).
+	require.Equalf(t, issues[3].ID, hits[0].Issue.ID, "first live hit must be the higher-ranked survivor")
+	require.Equalf(t, issues[4].ID, hits[1].Issue.ID, "second live hit must be the lower-ranked survivor")
+	require.Greaterf(t, hits[0].Score, hits[1].Score, "survivors must remain in descending rank order")
+}
+
 func TestEmbeddingStats(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)

@@ -77,11 +77,18 @@ func (r *Reconciler) Wake() {
 	}
 }
 
-// Health returns a snapshot of reconciler state.
+// Health returns a snapshot of reconciler state. LastSuccessAt is deep-copied
+// so a returned snapshot can never be mutated by a later cycle, even if the
+// caller (e.g. the /health handler) reads it concurrently.
 func (r *Reconciler) Health() ReconcilerHealth {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.health
+	h := r.health
+	if r.health.LastSuccessAt != nil {
+		t := *r.health.LastSuccessAt
+		h.LastSuccessAt = &t
+	}
+	return h
 }
 
 // Run drains dirty work until ctx is cancelled, waking on Wake(), a periodic

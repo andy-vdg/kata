@@ -141,6 +141,12 @@ func printSearchResults(cmd *cobra.Command, bs []byte) error {
 	if err := json.Unmarshal(bs, &b); err != nil {
 		return err
 	}
+	// A pre-0.3.0 daemon (reachable only in remote-client mode) omits "mode";
+	// it only ever did lexical search, so render it as the lexical baseline
+	// rather than emitting a bare "# mode=" / "mode=" line.
+	if b.Mode == "" {
+		b.Mode = "lexical"
+	}
 	if mode == outputAgent {
 		out := cmd.OutOrStdout()
 		header := fmt.Sprintf("OK search count=%d query=%s mode=%s", len(b.Results), agentValue(b.Query), b.Mode)

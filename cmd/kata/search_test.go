@@ -139,6 +139,47 @@ func TestSearchAgentAppendsMode(t *testing.T) {
 	}
 }
 
+// TestSearch_ModeFlagsMutuallyExclusive pins that --lexical/--hybrid/--semantic
+// cannot be combined; each conflicting pair is a validation error.
+func TestSearch_ModeFlagsMutuallyExclusive(t *testing.T) {
+	pairs := [][]string{
+		{"--lexical", "--hybrid"},
+		{"--lexical", "--semantic"},
+		{"--hybrid", "--semantic"},
+	}
+	for _, p := range pairs {
+		args := append([]string{"search", "x"}, p...)
+		_, err := runCmdOutput(t, nil, args...)
+		_ = requireCLIError(t, err, ExitValidation)
+	}
+}
+
+// TestSearchHumanDegradedLexicalKeepsTwoDecimals pins that degraded-lexical
+// results (BM25 scores) keep %.2f — only hybrid/semantic use %.4f.
+func TestSearchHumanDegradedLexicalKeepsTwoDecimals(t *testing.T) {
+	body := `{"query":"login","mode":"lexical","degraded":true,"degraded_reason":"embedder unreachable","results":[
+	  {"issue":{"short_id":"abc4","title":"Fix login","status":"open"},"score":2.5,"matched_in":["title"]}]}`
+	out := renderSearch(t, outputHuman, body)
+	if !strings.Contains(out, "2.50") || strings.Contains(out, "2.5000") {
+		t.Fatalf("degraded-lexical must use %%.2f, not %%.4f:\n%s", out)
+	}
+}
+
+// TestSearchHumanOldDaemonEmptyModeRendersAsLexical pins that a response with
+// no "mode" field (a pre-0.3.0 daemon, reachable only in remote-client mode)
+// renders as the lexical baseline rather than a bare "# mode=" line.
+func TestSearchHumanOldDaemonEmptyModeRendersAsLexical(t *testing.T) {
+	body := `{"query":"login","results":[
+	  {"issue":{"short_id":"abc4","title":"Fix login","status":"open"},"score":1.23,"matched_in":["title"]}]}`
+	out := renderSearch(t, outputHuman, body)
+	if strings.Contains(out, "# mode=") {
+		t.Fatalf("empty mode must not print a header:\n%s", out)
+	}
+	if !strings.Contains(out, "1.23") {
+		t.Fatalf("empty mode must render lexical %%.2f rows:\n%s", out)
+	}
+}
+
 // TestSearch_RejectsNonPositiveLimit covers hammer-test #5: --limit
 // 0/-1 used to be silently treated as "no limit" because
 // buildSearchURL only set the param when limit > 0. Now mirrors

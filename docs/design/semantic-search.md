@@ -406,13 +406,20 @@ The CLI has three output surfaces, each handled to a precise shape:
   `mode`. The compatibility test pins the appended field order, `mode=lexical`
   on an unconfigured daemon, and unchanged lexical score semantics.
 - Human mode (`%-8s  %.2f  %-8s  %s  (%s)` per row, `cmd/kata/search.go:142`)
-  is an ergonomic surface, so lexical output stays byte-identical to today —
-  no header, `%.2f` — and is pinned by the compatibility test. Hybrid and
-  semantic, which can only occur once embeddings are configured, print a
-  leading `# mode=<mode>` line (with a degraded note when applicable) and
-  render scores with `%.4f`, since RRF scores cluster around 0.01–0.03 and
-  `%.2f` would render them indistinguishable. There is no contradiction with
-  "lexical unchanged": the header appears only in the non-lexical modes.
+  is an ergonomic surface. The header rule is keyed on whether the output is
+  the plain baseline, not on the effective mode alone: a leading
+  `# mode=<mode>` line (carrying a `degraded: <reason>` note when present)
+  prints whenever `mode` is hybrid/semantic **or** `degraded` is true.
+  Baseline lexical — `mode=lexical` and not degraded, which covers an
+  unconfigured daemon, `auto` with embeddings off, and explicit `--lexical`
+  — stays byte-identical to today (no header, `%.2f`) and is pinned by the
+  compatibility test. This split is what keeps `auto` degradation
+  "silent-but-labeled" rather than silent: when `auto` falls back because the
+  embedder is down, the effective mode is `lexical` but `degraded` is true,
+  so a `# mode=lexical degraded: <reason>` line still tells the human that
+  semantic results are missing. Scores render with `%.4f` only for hybrid and
+  semantic (RRF/cosine values cluster around 0.01–0.03, which `%.2f` would
+  flatten); degraded-lexical results are ordinary BM25 and keep `%.2f`.
 
 ## Failure modes
 
@@ -457,7 +464,10 @@ TDD throughout (red, green, refactor). Highlights, not an exhaustive list:
 - CLI/API compatibility test pinning the unconfigured-default search across
   surfaces: JSON envelope and agent status line carry `mode:"lexical"` /
   `mode=lexical`; human output is byte-identical to today; lexical score
-  semantics (negated BM25) unchanged.
+  semantics (negated BM25) unchanged. A companion human-rendering test pins
+  that degraded `auto` (embedder down, effective `mode=lexical`,
+  `degraded:true`) *does* print the `# mode=lexical degraded: <reason>` note
+  — distinguishing baseline lexical from degraded lexical.
 - e2e with a deterministic fixture-map embedder and neutral placeholder
   data: create → instant lexical hit; after reconcile → paraphrase found
   semantically; embedder killed → degraded lexical.

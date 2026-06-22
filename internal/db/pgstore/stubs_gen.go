@@ -222,6 +222,10 @@ func (s *Store) EditIssueAtomic(_ context.Context, _ db.EditIssueAtomicParams) (
 	return db.EditIssueAtomicResult{}, ErrNotImplementedPhase3
 }
 
+func (s *Store) EmbeddingStats(_ context.Context, _ int64, _ string) (int64, string, error) {
+	return 0, "", ErrNotImplementedPhase3
+}
+
 func (s *Store) EnableFederationPush(_ context.Context, _ int64, _ int64) (db.FederationBinding, error) {
 	return db.FederationBinding{}, ErrNotImplementedPhase3
 }
@@ -487,6 +491,10 @@ func (s *Store) ListAPITokens(_ context.Context) ([]db.APIToken, error) {
 }
 
 func (s *Store) ListAllIssues(_ context.Context, _ db.ListAllIssuesParams) ([]db.Issue, error) {
+	return nil, ErrNotImplementedPhase3
+}
+
+func (s *Store) ListEmbedTargets(_ context.Context, _ string, _ int) ([]db.EmbedTarget, error) {
 	return nil, ErrNotImplementedPhase3
 }
 
@@ -800,4 +808,8 @@ func (s *Store) UpsertFederationBinding(_ context.Context, _ db.FederationBindin
 
 func (s *Store) UpsertImportMapping(_ context.Context, _ db.ImportMappingParams) (db.ImportMapping, error) {
 	return db.ImportMapping{}, ErrNotImplementedPhase3
+}
+
+func (s *Store) UpsertIssueEmbedding(_ context.Context, _ db.IssueEmbedding) error {
+	return ErrNotImplementedPhase3
 }

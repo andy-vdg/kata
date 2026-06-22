@@ -140,6 +140,12 @@ type Storage interface {
 	SearchFTS(ctx context.Context, projectID int64, q string, limit int, includeDeleted bool) ([]SearchCandidate, error)
 	SearchFTSAny(ctx context.Context, projectID int64, q string, limit int, includeDeleted bool) ([]SearchCandidate, error)
 
+	// embeddings (semantic search). SearchVector is added in a follow-up so the
+	// interface only gains it once sqlitestore implements it.
+	UpsertIssueEmbedding(ctx context.Context, e IssueEmbedding) error
+	ListEmbedTargets(ctx context.Context, fingerprint string, limit int) ([]EmbedTarget, error)
+	EmbeddingStats(ctx context.Context, projectID int64, fingerprint string) (count int64, maxUpdatedAt string, err error)
+
 	// import support
 	ImportBatch(ctx context.Context, p ImportBatchParams) (ImportBatchResult, []Event, error)
 	UpsertImportMapping(ctx context.Context, p ImportMappingParams) (ImportMapping, error)

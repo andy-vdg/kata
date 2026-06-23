@@ -23,8 +23,13 @@ func vectorToBytes(v []float32) []byte {
 
 // bytesToVector is the little-endian inverse of vectorToBytes. A trailing
 // partial group (len not a multiple of 4) is dropped; the schema CHECK keeps
-// stored blobs aligned to dims*4, so this only guards against corruption.
+// stored blobs aligned to dims*4, so this only guards against corruption. A
+// nil/empty blob yields a nil vector (vector_bytes is NOT NULL, so this is
+// defensive only).
 func bytesToVector(b []byte) []float32 {
+	if len(b) < 4 {
+		return nil
+	}
 	v := make([]float32, len(b)/4)
 	for i := range v {
 		v[i] = math.Float32frombits(binary.LittleEndian.Uint32(b[i*4:]))

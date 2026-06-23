@@ -97,9 +97,12 @@ agent search-before-create flow reliable.
 
 The vector index is **eventually consistent**. A background reconciler embeds new
 and edited issues a few seconds after they change (sooner against a fast local
-endpoint, longer against a busy cloud API). Until an issue's vector catches up it
-simply does not contribute to the vector leg yet — it is still found lexically,
-so nothing becomes unsearchable; only its semantic recall lags briefly.
+endpoint, longer against a busy cloud API). A brand-new issue is not in the
+vector leg until its first embedding lands — it is still found lexically, so
+nothing becomes unsearchable. An *edited* issue keeps serving its previous
+vector (so the vector leg may rank it on the old text) until the reconciler
+re-embeds it; the lexical leg already reflects the new text in the same results.
+Either way the staleness is brief and bounded by reconciler lag.
 
 You can watch the reconciler in `kata health --json` under `embeddings`:
 
@@ -113,9 +116,10 @@ You can watch the reconciler in `kata health --json` under `embeddings`:
 If the embedding endpoint is unreachable for a query, behavior depends on the
 mode:
 
-- **auto** degrades to lexical results and labels the response `degraded` with a
-  reason (visible as a `# mode=lexical degraded: …` note in human output and a
-  `degraded=` field in `--json`/`--agent`). The fallback is never silent.
+- **auto** degrades to lexical results and labels the response so the fallback is
+  never silent: a `# mode=lexical degraded: …` note in human output, `degraded`
+  and `degraded_reason` fields in `--json`, and a `degraded=<reason>` field in
+  `--agent`.
 - **explicit `--hybrid` / `--semantic`** do not degrade — they return an error
   (HTTP 503) so a caller that asked for semantic results knows it did not get
   them. They return 400 when embeddings are not configured at all.

@@ -30,10 +30,12 @@ import (
 // /health backlog report):
 //
 //  1. create an issue → it is found lexically *immediately*, before any embed;
-//  2. wait for the reconciler to drain (poll /health until backlog == 0);
-//  3. a paraphrase query that shares no salient tokens is found with
-//     mode=hybrid and "semantic" in matched_in — the vector leg contributed;
-//  4. kill the embedder → an auto search returns results with mode=lexical and
+//  2. a paraphrase that shares no salient tokens first misses lexically, then —
+//     once the reconciler embeds the issue — is found by polling the hybrid
+//     search until the vector leg surfaces it (mode=hybrid, "semantic" in
+//     matched_in). The wait is on this observable search result, not the
+//     /health backlog gauge;
+//  3. kill the embedder → an auto search returns results with mode=lexical and
 //     degraded=true, and an explicit --hybrid request is rejected 503.
 //
 // The deterministic embedder maps inputs to fixed unit vectors by topic, so a

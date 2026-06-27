@@ -20,6 +20,7 @@ type githubSyncOptions struct {
 	host        string
 	interval    string
 	titlePrefix bool
+	syncMode    string
 }
 
 type githubSyncBindingBody struct {
@@ -103,13 +104,17 @@ func newGitHubSyncEnableCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			config := map[string]any{
+				"host":         binding.Host,
+				"owner":        binding.Owner,
+				"repo":         binding.Repo,
+				"title_prefix": opts.titlePrefix,
+			}
+			if strings.TrimSpace(opts.syncMode) != "" {
+				config["sync_mode"] = strings.TrimSpace(opts.syncMode)
+			}
 			body := map[string]any{
-				"config": map[string]any{
-					"host":         binding.Host,
-					"owner":        binding.Owner,
-					"repo":         binding.Repo,
-					"title_prefix": opts.titlePrefix,
-				},
+				"config": config,
 			}
 			if strings.TrimSpace(opts.interval) != "" {
 				body["interval"] = strings.TrimSpace(opts.interval)
@@ -129,6 +134,7 @@ func newGitHubSyncEnableCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.host, "host", "", "GitHub host (default: github.com)")
 	cmd.Flags().StringVar(&opts.interval, "interval", "", "sync interval duration, such as 5m")
 	cmd.Flags().BoolVar(&opts.titlePrefix, "title-prefix", true, "prefix imported issue titles with [GitHub #N]")
+	cmd.Flags().StringVar(&opts.syncMode, "sync-mode", "", "conflict resolution: 'github' (GitHub wins) or 'local' (default, local wins)")
 	return cmd
 }
 

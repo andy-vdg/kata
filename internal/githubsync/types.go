@@ -76,6 +76,10 @@ type Config struct {
 	Repo        string `json:"repo"`
 	RepoID      int64  `json:"repo_id"`
 	TitlePrefix *bool  `json:"title_prefix"`
+	// SyncMode controls how conflicts between GitHub and local parent links are
+	// resolved. "github" means GitHub is authoritative and local links are
+	// overwritten; "local" (default) means local links are preserved.
+	SyncMode string `json:"sync_mode,omitempty"`
 }
 
 // Binding converts the stored config into the fetcher binding shape.

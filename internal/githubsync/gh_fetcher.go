@@ -18,10 +18,11 @@ type Fetcher interface {
 	Repository(ctx context.Context, host, owner, repo string) (Repository, error)
 	Issues(ctx context.Context, binding Binding, since *time.Time) ([]Issue, error)
 	Comments(ctx context.Context, binding Binding, issueNumber int) ([]Comment, error)
-	// ParentMap returns a map from child issue number to parent issue REST ID
-	// by combining a GraphQL parent-number listing with per-parent REST ID lookups.
+	// ParentMap returns a map from child issue REST ID to parent issue REST ID
+	// by combining a GraphQL listing (which provides child databaseId and parent
+	// number) with per-parent REST ID lookups.
 	// Returns nil, nil when no parent relationships exist.
-	ParentMap(ctx context.Context, binding Binding) (map[int]int64, error)
+	ParentMap(ctx context.Context, binding Binding) (map[int64]int64, error)
 }
 
 // CommandRunner executes a command and returns stdout, stderr, and the command error.
@@ -97,10 +98,13 @@ func (f *GHFetcher) Comments(ctx context.Context, binding Binding, issueNumber i
 }
 
 // issueParentRow is the subset of the gh issue list --json output used to build
-// the parent map. It only carries the child number and the parent's number.
+// the parent map. It carries the child's REST databaseId alongside its number
+// and the parent's number, so we can key the result by REST ID rather than
+// issue number (avoiding collisions when a child has been transferred).
 type issueParentRow struct {
-	Number int          `json:"number"`
-	Parent *parentField `json:"parent"`
+	Number     int          `json:"number"`
+	DatabaseID int64        `json:"databaseId"`
+	Parent     *parentField `json:"parent"`
 }
 
 type parentField struct {
@@ -108,10 +112,11 @@ type parentField struct {
 }
 
 // ParentMap fetches the child→parent REST ID mapping for the repository.
-// It calls gh issue list (GraphQL) to discover parent numbers, then resolves
-// each unique parent's numeric REST ID via the REST API so TargetExternalID
-// matches the canonical issue-id:<restID> key stored in import_mappings.
-func (f *GHFetcher) ParentMap(ctx context.Context, binding Binding) (map[int]int64, error) {
+// It calls gh issue list (GraphQL) to discover child databaseIds and parent
+// numbers, then resolves each unique parent's numeric REST ID via the REST API
+// so TargetExternalID matches the canonical issue-id:<restID> key stored in
+// import_mappings. Returns map[childRestID]parentRestID.
+func (f *GHFetcher) ParentMap(ctx context.Context, binding Binding) (map[int64]int64, error) {
 	binding, err := normalizeBinding(binding)
 	if err != nil {
 		return nil, err
@@ -120,7 +125,7 @@ func (f *GHFetcher) ParentMap(ctx context.Context, binding Binding) (map[int]int
 	repo := binding.Owner + "/" + binding.Repo
 	stdout, stderr, err := f.runner.Run(ctx, "gh", "issue", "list",
 		"--repo", repo,
-		"--json", "number,parent",
+		"--json", "number,databaseId,parent",
 		"--state", "all",
 		"--limit", "500",
 	)
@@ -132,11 +137,12 @@ func (f *GHFetcher) ParentMap(ctx context.Context, binding Binding) (map[int]int
 		return nil, fmt.Errorf("decode GitHub parent map: %w", err)
 	}
 
-	childToParentNum := map[int]int{}
+	// childRestID → parentNumber; collect unique parent numbers for REST lookups.
+	childToParentNum := map[int64]int{}
 	uniqueParents := map[int]struct{}{}
 	for _, row := range rows {
-		if row.Parent != nil && row.Parent.Number > 0 {
-			childToParentNum[row.Number] = row.Parent.Number
+		if row.Parent != nil && row.Parent.Number > 0 && row.DatabaseID != 0 {
+			childToParentNum[row.DatabaseID] = row.Parent.Number
 			uniqueParents[row.Parent.Number] = struct{}{}
 		}
 	}
@@ -164,10 +170,10 @@ func (f *GHFetcher) ParentMap(ctx context.Context, binding Binding) (map[int]int
 		}
 	}
 
-	out := make(map[int]int64, len(childToParentNum))
-	for childNum, parentNum := range childToParentNum {
+	out := make(map[int64]int64, len(childToParentNum))
+	for childRestID, parentNum := range childToParentNum {
 		if parentID, ok := parentNumToID[parentNum]; ok {
-			out[childNum] = parentID
+			out[childRestID] = parentID
 		}
 	}
 	return out, nil

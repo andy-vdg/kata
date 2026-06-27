@@ -156,7 +156,12 @@ type ImportBatchParams struct {
 	Source         string
 	Actor          string
 	IssueSyncGuard *IssueSyncImportGuard
-	Items          []ImportItem
+	// AuthoritativeLinkTypes names link types for which the source is
+	// authoritative. When non-empty, conflicting local links of these types are
+	// deleted and replaced rather than preserved. Currently used by GitHub sync
+	// in "github" sync mode to enforce GitHub's parent hierarchy.
+	AuthoritativeLinkTypes []string
+	Items                  []ImportItem
 }
 
 // IssueSyncImportGuard binds an ImportBatch call to a specific claimed

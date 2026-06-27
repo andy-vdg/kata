@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"go.kenn.io/kata/internal/config"
 	"go.kenn.io/kata/internal/githubsync"
 	"go.kenn.io/kata/internal/textsafe"
 )
@@ -20,6 +21,7 @@ type githubSyncOptions struct {
 	host        string
 	interval    string
 	titlePrefix bool
+	syncMode    string
 }
 
 type githubSyncBindingBody struct {
@@ -92,7 +94,20 @@ func newGitHubSyncEnableCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "enable",
 		Short: "enable GitHub sync for this project",
-		Args:  cobra.NoArgs,
+		Long: `Enable one-way GitHub → Kata sync for this project.
+
+Parent link conflict resolution is controlled by --sync-mode (or
+[github] sync_mode in .kata.toml, which takes precedence):
+
+  local   (default) Locally-set parent links are preserved; GitHub's
+                    parent is skipped when a local one already exists.
+  github            GitHub is authoritative; conflicting local parent
+                    links are deleted and replaced on each sync.
+
+Example .kata.toml:
+  [github]
+  sync_mode = "github"`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
 			client, baseURL, projectID, err := githubSyncProjectClient(ctx)
@@ -103,13 +118,28 @@ func newGitHubSyncEnableCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+
+			// Resolve sync_mode: .kata.toml wins over --sync-mode flag.
+			syncMode := strings.TrimSpace(opts.syncMode)
+			if start, err := resolveStartPath(flags.Workspace); err == nil {
+				if tomlCfg, _, err := config.FindProjectConfig(start); err == nil {
+					if m := strings.TrimSpace(tomlCfg.Github.SyncMode); m != "" {
+						syncMode = m
+					}
+				}
+			}
+
+			cfg := map[string]any{
+				"host":         binding.Host,
+				"owner":        binding.Owner,
+				"repo":         binding.Repo,
+				"title_prefix": opts.titlePrefix,
+			}
+			if syncMode != "" {
+				cfg["sync_mode"] = syncMode
+			}
 			body := map[string]any{
-				"config": map[string]any{
-					"host":         binding.Host,
-					"owner":        binding.Owner,
-					"repo":         binding.Repo,
-					"title_prefix": opts.titlePrefix,
-				},
+				"config": cfg,
 			}
 			if strings.TrimSpace(opts.interval) != "" {
 				body["interval"] = strings.TrimSpace(opts.interval)
@@ -129,6 +159,7 @@ func newGitHubSyncEnableCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.host, "host", "", "GitHub host (default: github.com)")
 	cmd.Flags().StringVar(&opts.interval, "interval", "", "sync interval duration, such as 5m")
 	cmd.Flags().BoolVar(&opts.titlePrefix, "title-prefix", true, "prefix imported issue titles with [GitHub #N]")
+	cmd.Flags().StringVar(&opts.syncMode, "sync-mode", "", "conflict resolution: 'github' (GitHub wins) or 'local' (default, local wins)")
 	return cmd
 }
 

@@ -222,12 +222,17 @@ func githubSyncEnableParams(ctx context.Context, cfg ServerConfig, in *api.Enabl
 		owner = canonicalOwner
 		repoName = canonicalRepo
 	}
+	syncMode := strings.TrimSpace(issueSyncConfigString(in.Body.Config, "sync_mode"))
+	if syncMode != "" && syncMode != "github" && syncMode != "local" {
+		return db.UpsertIssueSyncBindingParams{}, api.NewError(http.StatusBadRequest, "validation", "sync_mode must be \"github\" or \"local\"", "", nil)
+	}
 	ghConfig := githubsync.Config{
 		Host:        host,
 		Owner:       owner,
 		Repo:        repoName,
 		RepoID:      fetched.ID,
 		TitlePrefix: &titlePrefix,
+		SyncMode:    syncMode,
 	}
 	configJSON, err := githubsync.EncodeConfig(ghConfig)
 	if err != nil {

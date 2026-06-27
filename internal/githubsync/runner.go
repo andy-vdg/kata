@@ -188,6 +188,9 @@ func (r *Runner) runClaimed(ctx context.Context, binding db.IssueSyncBinding, sy
 		Provider:  "github",
 		StartedAt: syncStartedAt,
 	}
+	if ghConfig.SyncMode == "github" {
+		batch.AuthoritativeLinkTypes = []string{"parent"}
+	}
 	importResult, err := r.importChunks(ctx, binding, batch)
 	if err != nil {
 		return r.recordError(ctx, binding, syncStartedAt, err, importResult)
@@ -222,6 +225,7 @@ func (r *Runner) refreshRepository(ctx context.Context, binding db.IssueSyncBind
 		Repo:        name,
 		RepoID:      repo.ID,
 		TitlePrefix: ghConfig.TitlePrefix,
+		SyncMode:    ghConfig.SyncMode,
 	}
 	configJSON, err := EncodeConfig(refreshedConfig)
 	if err != nil {

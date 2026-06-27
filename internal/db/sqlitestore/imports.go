@@ -122,7 +122,7 @@ func (d *Store) importBatch(ctx context.Context, p db.ImportBatchParams) (db.Imp
 		if state == nil {
 			continue
 		}
-		if state.created || state.sourceNewer {
+		if state.created || state.sourceNewer || hasAuthoritativeLink(p, item) {
 			linkEvents, n, err := d.reconcileImportLinks(ctx, tx, p, state.issue, item, states, projectName)
 			if err != nil {
 				return db.ImportBatchResult{}, nil, err
@@ -734,16 +734,36 @@ func (d *Store) reconcileImportLinks(ctx context.Context, tx *sql.Tx, p db.Impor
 		if createdAt.IsZero() {
 			createdAt = item.CreatedAt
 		}
-		res, err := tx.ExecContext(ctx, `INSERT INTO links(from_issue_id, to_issue_id, from_issue_uid, to_issue_uid, type, author, created_at)
-			VALUES(?, ?, (SELECT uid FROM issues WHERE id = ?), (SELECT uid FROM issues WHERE id = ?), ?, ?, ?)`,
+		const insertLinkSQL = `INSERT INTO links(from_issue_id, to_issue_id, from_issue_uid, to_issue_uid, type, author, created_at)
+			VALUES(?, ?, (SELECT uid FROM issues WHERE id = ?), (SELECT uid FROM issues WHERE id = ?), ?, ?, ?)`
+		res, err := tx.ExecContext(ctx, insertLinkSQL,
 			fromID, toID, fromID, toID, importLink.Type, p.Actor, createdAt)
 		if err != nil {
 			classified := classifyLinkInsertError(err)
-			if errors.Is(classified, db.ErrParentAlreadySet) {
-				// A different parent link already exists locally; local wins in this sync mode.
+			if !errors.Is(classified, db.ErrParentAlreadySet) {
+				return nil, 0, classified
+			}
+			if !isAuthoritativeLinkType(p, importLink.Type) {
+				// Local master mode: existing local link wins.
 				continue
 			}
-			return nil, 0, classified
+			// GitHub master mode: remove the conflicting link and retry.
+			deletedLink, err2 := deleteConflictingParentLinkTx(ctx, tx, p, fromID, importLink.Type)
+			if err2 != nil {
+				return nil, 0, err2
+			}
+			if deletedLink != nil {
+				evt, err2 := d.insertLinkEvent(ctx, tx, p, issue, projectName, "issue.unlinked", *deletedLink, item.UpdatedAt)
+				if err2 != nil {
+					return nil, 0, err2
+				}
+				events = append(events, evt)
+			}
+			res, err = tx.ExecContext(ctx, insertLinkSQL,
+				fromID, toID, fromID, toID, importLink.Type, p.Actor, createdAt)
+			if err != nil {
+				return nil, 0, classifyLinkInsertError(err)
+			}
 		}
 		linkID, err := res.LastInsertId()
 		if err != nil {
@@ -765,6 +785,53 @@ func (d *Store) reconcileImportLinks(ctx context.Context, tx *sql.Tx, p db.Impor
 		created++
 	}
 	return events, created, nil
+}
+
+// isAuthoritativeLinkType reports whether the source is authoritative for the
+// given link type in this batch — i.e., GitHub master mode for "parent" links.
+func isAuthoritativeLinkType(p db.ImportBatchParams, linkType string) bool {
+	for _, t := range p.AuthoritativeLinkTypes {
+		if t == linkType {
+			return true
+		}
+	}
+	return false
+}
+
+// hasAuthoritativeLink reports whether item carries any link whose type is
+// authoritative for this batch. Used to trigger link reconciliation on
+// otherwise-unchanged issues so GitHub-master mode can correct parent links
+// set incorrectly in a prior run without waiting for a content change.
+func hasAuthoritativeLink(p db.ImportBatchParams, item db.ImportItem) bool {
+	for _, l := range item.Links {
+		if isAuthoritativeLinkType(p, l.Type) {
+			return true
+		}
+	}
+	return false
+}
+
+// deleteConflictingParentLinkTx removes an existing link that conflicts with an
+// authoritative incoming link. Any import_mapping rows referencing the deleted
+// link are also removed (regardless of source) so they don't become dangling.
+// Returns the deleted link so the caller can emit an issue.unlinked event, or
+// nil if no conflicting link was found.
+func deleteConflictingParentLinkTx(ctx context.Context, tx *sql.Tx, p db.ImportBatchParams, fromID int64, linkType string) (*db.Link, error) {
+	link, err := scanLink(tx.QueryRowContext(ctx, linkSelect+` WHERE from_issue_id = ? AND type = ?`, fromID, linkType))
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM import_mappings WHERE project_id = ? AND object_type = 'link' AND link_id = ?`,
+		p.ProjectID, link.ID); err != nil {
+		return nil, fmt.Errorf("delete import mapping for conflicting link: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM links WHERE id = ?`, link.ID); err != nil {
+		return nil, fmt.Errorf("delete conflicting parent link: %w", err)
+	}
+	return &link, nil
 }
 
 func (d *Store) insertLinkEvent(ctx context.Context, tx *sql.Tx, p db.ImportBatchParams, issue db.Issue, projectName, eventType string, link db.Link, updatedAt time.Time) (db.Event, error) {

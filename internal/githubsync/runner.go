@@ -175,8 +175,13 @@ func (r *Runner) runClaimed(ctx context.Context, binding db.IssueSyncBinding, sy
 	if err != nil {
 		return r.recordError(ctx, binding, syncStartedAt, err, db.ImportBatchResult{})
 	}
+	parentMap, err := r.config.Fetcher.ParentMap(ctx, ghConfig.Binding())
+	if err != nil {
+		r.config.Logger.Warn("github parent map fetch failed, skipping parent links", "error", err)
+		parentMap = nil
+	}
 
-	batch := BuildImportBatchWithConfig(binding.SourceKey, ghConfig, issues, comments, syncStartedAt)
+	batch := BuildImportBatchWithConfig(binding.SourceKey, ghConfig, issues, comments, parentMap, syncStartedAt)
 	batch.ProjectID = binding.ProjectID
 	batch.IssueSyncGuard = &db.IssueSyncImportGuard{
 		BindingID: binding.ID,

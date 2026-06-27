@@ -1060,6 +1060,10 @@ func (f *daemonGitHubSyncFetcher) Comments(_ context.Context, _ githubsync.Bindi
 	return append([]githubsync.Comment(nil), f.comments[issueNumber]...), nil
 }
 
+func (f *daemonGitHubSyncFetcher) ParentMap(_ context.Context, _ githubsync.Binding) (map[int]int64, error) {
+	return nil, nil
+}
+
 func (f *daemonGitHubSyncFetcher) repositoryCallCount() int64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()

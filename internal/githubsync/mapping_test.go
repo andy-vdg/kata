@@ -188,7 +188,7 @@ func TestBuildImportBatchCanPreserveGitHubTitles(t *testing.T) {
 		},
 	}
 
-	batch := BuildImportBatchWithConfig("github:repo-node", Config{TitlePrefix: &titlePrefix}, issues, nil, syncStartedAt)
+	batch := BuildImportBatchWithConfig("github:repo-node", Config{TitlePrefix: &titlePrefix}, issues, nil, nil, syncStartedAt)
 
 	assert.Equal(t, "Original title", itemByExternalID(t, batch.Items, "issue:I_normal").Title)
 	assert.Equal(t, "(untitled GitHub issue #202)", itemByExternalID(t, batch.Items, "issue:I_empty").Title)

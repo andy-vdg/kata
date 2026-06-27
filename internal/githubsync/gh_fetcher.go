@@ -18,6 +18,10 @@ type Fetcher interface {
 	Repository(ctx context.Context, host, owner, repo string) (Repository, error)
 	Issues(ctx context.Context, binding Binding, since *time.Time) ([]Issue, error)
 	Comments(ctx context.Context, binding Binding, issueNumber int) ([]Comment, error)
+	// ParentMap returns a map from child issue number to parent issue REST ID
+	// by combining a GraphQL parent-number listing with per-parent REST ID lookups.
+	// Returns nil, nil when no parent relationships exist.
+	ParentMap(ctx context.Context, binding Binding) (map[int]int64, error)
 }
 
 // CommandRunner executes a command and returns stdout, stderr, and the command error.
@@ -90,6 +94,83 @@ func (f *GHFetcher) Comments(ctx context.Context, binding Binding, issueNumber i
 		return nil, err
 	}
 	return comments, nil
+}
+
+// issueParentRow is the subset of the gh issue list --json output used to build
+// the parent map. It only carries the child number and the parent's number.
+type issueParentRow struct {
+	Number int          `json:"number"`
+	Parent *parentField `json:"parent"`
+}
+
+type parentField struct {
+	Number int `json:"number"`
+}
+
+// ParentMap fetches the child→parent REST ID mapping for the repository.
+// It calls gh issue list (GraphQL) to discover parent numbers, then resolves
+// each unique parent's numeric REST ID via the REST API so TargetExternalID
+// matches the canonical issue-id:<restID> key stored in import_mappings.
+func (f *GHFetcher) ParentMap(ctx context.Context, binding Binding) (map[int]int64, error) {
+	binding, err := normalizeBinding(binding)
+	if err != nil {
+		return nil, err
+	}
+
+	repo := binding.Owner + "/" + binding.Repo
+	stdout, stderr, err := f.runner.Run(ctx, "gh", "issue", "list",
+		"--repo", repo,
+		"--json", "number,parent",
+		"--state", "all",
+		"--limit", "500",
+	)
+	if err != nil {
+		return nil, ghAPIError(stderr, err)
+	}
+	var rows []issueParentRow
+	if err := json.Unmarshal(stdout, &rows); err != nil {
+		return nil, fmt.Errorf("decode GitHub parent map: %w", err)
+	}
+
+	childToParentNum := map[int]int{}
+	uniqueParents := map[int]struct{}{}
+	for _, row := range rows {
+		if row.Parent != nil && row.Parent.Number > 0 {
+			childToParentNum[row.Number] = row.Parent.Number
+			uniqueParents[row.Parent.Number] = struct{}{}
+		}
+	}
+	if len(childToParentNum) == 0 {
+		return nil, nil
+	}
+
+	// Resolve each unique parent's REST numeric ID. The REST endpoint returns
+	// Issue.ID (int64), which is the canonical import_mappings key format
+	// "issue-id:<ID>". gh issue list uses GraphQL and only provides node_id,
+	// so we need one REST call per unique parent.
+	parentNumToID := make(map[int]int64, len(uniqueParents))
+	for parentNum := range uniqueParents {
+		endpoint := fmt.Sprintf("%s/issues/%d", repositoryEndpoint(binding), parentNum)
+		pstdout, pstderr, perr := f.runner.Run(ctx, "gh", "api", "--hostname", binding.Host, endpoint)
+		if perr != nil {
+			return nil, ghAPIError(pstderr, perr)
+		}
+		var parent Issue
+		if err := json.Unmarshal(pstdout, &parent); err != nil {
+			return nil, fmt.Errorf("decode GitHub parent issue %d: %w", parentNum, err)
+		}
+		if parent.ID != 0 {
+			parentNumToID[parentNum] = parent.ID
+		}
+	}
+
+	out := make(map[int]int64, len(childToParentNum))
+	for childNum, parentNum := range childToParentNum {
+		if parentID, ok := parentNumToID[parentNum]; ok {
+			out[childNum] = parentID
+		}
+	}
+	return out, nil
 }
 
 type execCommandRunner struct{}

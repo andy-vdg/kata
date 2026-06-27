@@ -173,7 +173,7 @@ func TestRunnerLegacyTitlePrefixConfigReconcilesExistingImportedTitles(t *testin
 		Repo:        "example-repo",
 		RepoID:      101,
 		TitlePrefix: &noTitlePrefix,
-	}, []Issue{exactTitle}, nil, h.now)
+	}, []Issue{exactTitle}, nil, nil, h.now)
 	exactBatch.ProjectID = h.project.ID
 	_, _, err := h.db.ImportBatch(h.ctx, exactBatch)
 	require.NoError(t, err)
@@ -776,6 +776,10 @@ func (f *fakeRunnerFetcher) Comments(_ context.Context, _ Binding, issueNumber i
 		return nil, f.commentsErr
 	}
 	return append([]Comment(nil), f.comments[issueNumber]...), nil
+}
+
+func (f *fakeRunnerFetcher) ParentMap(_ context.Context, _ Binding) (map[int]int64, error) {
+	return nil, nil
 }
 
 func (f *fakeRunnerFetcher) repoCallCount() int {

@@ -16,12 +16,14 @@ func IsPullRequestIssue(issue Issue) bool {
 
 // BuildImportBatch maps GitHub issue and comment API rows to kata import items.
 func BuildImportBatch(sourceKey string, issues []Issue, comments map[int][]Comment, syncStartedAt time.Time) db.ImportBatchParams {
-	return BuildImportBatchWithConfig(sourceKey, Config{}, issues, comments, syncStartedAt)
+	return BuildImportBatchWithConfig(sourceKey, Config{}, issues, comments, nil, syncStartedAt)
 }
 
 // BuildImportBatchWithConfig maps GitHub issue and comment API rows to kata
 // import items using stored provider config for presentation choices.
-func BuildImportBatchWithConfig(sourceKey string, config Config, issues []Issue, comments map[int][]Comment, syncStartedAt time.Time) db.ImportBatchParams {
+// parentMap maps child issue number to parent issue REST ID; when non-nil, a
+// "parent" link is added to each child item whose parent REST ID is known.
+func BuildImportBatchWithConfig(sourceKey string, config Config, issues []Issue, comments map[int][]Comment, parentMap map[int]int64, syncStartedAt time.Time) db.ImportBatchParams {
 	batch := db.ImportBatchParams{
 		Source: sourceKey,
 		Actor:  actorGitHubSync,
@@ -54,6 +56,12 @@ func BuildImportBatchWithConfig(sourceKey string, config Config, issues []Issue,
 				closedAt = updatedAt
 			}
 			item.ClosedAt = &closedAt
+		}
+		if parentID, ok := parentMap[issue.Number]; ok {
+			item.Links = append(item.Links, db.ImportLink{
+				Type:             "parent",
+				TargetExternalID: fmt.Sprintf("issue-id:%d", parentID),
+			})
 		}
 		batch.Items = append(batch.Items, item)
 	}

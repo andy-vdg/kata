@@ -244,6 +244,10 @@ func (f *fakeGitHubSyncCLIFetcher) Comments(context.Context, githubsync.Binding,
 	return nil, errors.New("CLI tests should not fetch GitHub comments")
 }
 
+func (f *fakeGitHubSyncCLIFetcher) ParentMap(context.Context, githubsync.Binding) (map[int]int64, error) {
+	return nil, nil
+}
+
 type fakeGitHubSyncCLIRunner struct {
 	runs  int64
 	delay time.Duration

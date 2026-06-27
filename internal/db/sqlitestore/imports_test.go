@@ -722,6 +722,101 @@ func TestImportBatch_MissingLinkTargetRejectsTransaction(t *testing.T) {
 	assertRowCount(ctx, t, d, 0, "issue insert rolled back", `SELECT COUNT(*) FROM issues WHERE project_id = ?`, p.ID)
 }
 
+func TestImportBatch_AuthoritativeLinkTypeFixesMissingParentOnUnchangedIssue(t *testing.T) {
+	// Simulates B-lite: a prior sync imported the child without creating the
+	// parent link (e.g. due to a fetcher bug). A subsequent incremental sync
+	// re-delivers the child as "unchanged" (same updated_at) but now carries
+	// AuthoritativeLinkTypes = ["parent"]. The parent link must be created.
+	d, ctx, p := setupTestProject(t)
+	t1 := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+
+	// First sync: child imported without parent link.
+	_, _, err := d.ImportBatch(ctx, db.ImportBatchParams{ProjectID: p.ID, Source: "github", Actor: "importer", Items: []db.ImportItem{
+		{ExternalID: "issue-id:100", Title: "child", Body: "body", Author: "alice", Status: "open", CreatedAt: t1, UpdatedAt: t1},
+		{ExternalID: "issue-id:200", Title: "parent", Body: "body", Author: "bob", Status: "open", CreatedAt: t1, UpdatedAt: t1},
+	}})
+	require.NoError(t, err)
+
+	childMap, err := d.ImportMappingBySource(ctx, p.ID, "github", "issue", "issue-id:100")
+	require.NoError(t, err)
+	parentMap, err := d.ImportMappingBySource(ctx, p.ID, "github", "issue", "issue-id:200")
+	require.NoError(t, err)
+	assertRowCount(ctx, t, d, 0, "no links after first sync", `SELECT COUNT(*) FROM links WHERE from_issue_id = ?`, *childMap.IssueID)
+
+	// Second sync: same updated_at (child is "unchanged"), parent link now present,
+	// source is authoritative for parent links.
+	res, _, err := d.ImportBatch(ctx, db.ImportBatchParams{
+		ProjectID:              p.ID,
+		Source:                 "github",
+		Actor:                  "importer",
+		AuthoritativeLinkTypes: []string{"parent"},
+		Items: []db.ImportItem{
+			{ExternalID: "issue-id:100", Title: "child", Body: "body", Author: "alice", Status: "open", CreatedAt: t1, UpdatedAt: t1,
+				Links: []db.ImportLink{{Type: "parent", TargetExternalID: "issue-id:200"}}},
+			{ExternalID: "issue-id:200", Title: "parent", Body: "body", Author: "bob", Status: "open", CreatedAt: t1, UpdatedAt: t1},
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 2, res.Unchanged)
+	assert.Equal(t, 1, res.Links)
+
+	link, err := d.LinkByEndpoints(ctx, *childMap.IssueID, *parentMap.IssueID, "parent")
+	require.NoError(t, err)
+	assert.Equal(t, *childMap.IssueID, link.FromIssueID)
+	assert.Equal(t, *parentMap.IssueID, link.ToIssueID)
+	_, err = d.ImportMappingBySource(ctx, p.ID, "github", "link", "issue-id:100:parent:issue-id:200")
+	assert.NoError(t, err)
+}
+
+func TestImportBatch_AuthoritativeLinkTypeReplacesWrongParentOnUnchangedIssue(t *testing.T) {
+	// Simulates B-lite for reparented issues: child had wrong parent stored from
+	// a prior broken sync, re-imported unchanged but GitHub is authoritative.
+	d, ctx, p := setupTestProject(t)
+	t1 := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+
+	// First sync: child imported with wrong parent (B instead of C).
+	_, _, err := d.ImportBatch(ctx, db.ImportBatchParams{ProjectID: p.ID, Source: "github", Actor: "importer", Items: []db.ImportItem{
+		{ExternalID: "issue-id:100", Title: "child", Body: "body", Author: "alice", Status: "open", CreatedAt: t1, UpdatedAt: t1,
+			Links: []db.ImportLink{{Type: "parent", TargetExternalID: "issue-id:200"}}},
+		{ExternalID: "issue-id:200", Title: "wrong-parent", Body: "body", Author: "bob", Status: "open", CreatedAt: t1, UpdatedAt: t1},
+		{ExternalID: "issue-id:300", Title: "right-parent", Body: "body", Author: "cara", Status: "open", CreatedAt: t1, UpdatedAt: t1},
+	}})
+	require.NoError(t, err)
+
+	childMap, err := d.ImportMappingBySource(ctx, p.ID, "github", "issue", "issue-id:100")
+	require.NoError(t, err)
+	wrongParentMap, err := d.ImportMappingBySource(ctx, p.ID, "github", "issue", "issue-id:200")
+	require.NoError(t, err)
+	rightParentMap, err := d.ImportMappingBySource(ctx, p.ID, "github", "issue", "issue-id:300")
+	require.NoError(t, err)
+	_, err = d.LinkByEndpoints(ctx, *childMap.IssueID, *wrongParentMap.IssueID, "parent")
+	require.NoError(t, err)
+
+	// Second sync: same updated_at (child "unchanged"), parent changed to C.
+	res, _, err := d.ImportBatch(ctx, db.ImportBatchParams{
+		ProjectID:              p.ID,
+		Source:                 "github",
+		Actor:                  "importer",
+		AuthoritativeLinkTypes: []string{"parent"},
+		Items: []db.ImportItem{
+			{ExternalID: "issue-id:100", Title: "child", Body: "body", Author: "alice", Status: "open", CreatedAt: t1, UpdatedAt: t1,
+				Links: []db.ImportLink{{Type: "parent", TargetExternalID: "issue-id:300"}}},
+			{ExternalID: "issue-id:200", Title: "wrong-parent", Body: "body", Author: "bob", Status: "open", CreatedAt: t1, UpdatedAt: t1},
+			{ExternalID: "issue-id:300", Title: "right-parent", Body: "body", Author: "cara", Status: "open", CreatedAt: t1, UpdatedAt: t1},
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 3, res.Unchanged)
+	assert.Equal(t, 1, res.Links)
+
+	_, err = d.LinkByEndpoints(ctx, *childMap.IssueID, *wrongParentMap.IssueID, "parent")
+	assert.ErrorIs(t, err, db.ErrNotFound)
+	link, err := d.LinkByEndpoints(ctx, *childMap.IssueID, *rightParentMap.IssueID, "parent")
+	require.NoError(t, err)
+	assert.Equal(t, *childMap.IssueID, link.FromIssueID)
+	assert.Equal(t, *rightParentMap.IssueID, link.ToIssueID)
+}
+
 func TestImportBatch_AdoptsLegacyExternalIDMapping(t *testing.T) {
 	d, ctx, p := setupTestProject(t)
 	t1 := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)

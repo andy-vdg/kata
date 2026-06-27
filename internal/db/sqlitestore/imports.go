@@ -122,7 +122,7 @@ func (d *Store) importBatch(ctx context.Context, p db.ImportBatchParams) (db.Imp
 		if state == nil {
 			continue
 		}
-		if state.created || state.sourceNewer {
+		if state.created || state.sourceNewer || hasAuthoritativeLink(p, item) {
 			linkEvents, n, err := d.reconcileImportLinks(ctx, tx, p, state.issue, item, states, projectName)
 			if err != nil {
 				return db.ImportBatchResult{}, nil, err
@@ -792,6 +792,19 @@ func (d *Store) reconcileImportLinks(ctx context.Context, tx *sql.Tx, p db.Impor
 func isAuthoritativeLinkType(p db.ImportBatchParams, linkType string) bool {
 	for _, t := range p.AuthoritativeLinkTypes {
 		if t == linkType {
+			return true
+		}
+	}
+	return false
+}
+
+// hasAuthoritativeLink reports whether item carries any link whose type is
+// authoritative for this batch. Used to trigger link reconciliation on
+// otherwise-unchanged issues so GitHub-master mode can correct parent links
+// set incorrectly in a prior run without waiting for a content change.
+func hasAuthoritativeLink(p db.ImportBatchParams, item db.ImportItem) bool {
+	for _, l := range item.Links {
+		if isAuthoritativeLinkType(p, l.Type) {
 			return true
 		}
 	}

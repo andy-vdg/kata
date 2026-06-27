@@ -25,6 +25,17 @@ type ProjectConfig struct {
 	Version int             `toml:"version"`
 	Project ProjectBindings `toml:"project"`
 	Server  ServerConfig    `toml:"server,omitempty"`
+	Github  GithubConfig    `toml:"github,omitempty"`
+}
+
+// GithubConfig carries the optional [github] block in .kata.toml.
+// Settings here are applied when running `kata sync github enable` and
+// take precedence over CLI flags (file wins).
+type GithubConfig struct {
+	// SyncMode controls how conflicts between GitHub and local parent links
+	// are resolved. "github" means GitHub is authoritative; "local" (default)
+	// means locally-set links are preserved.
+	SyncMode string `toml:"sync_mode,omitempty"`
 }
 
 // ProjectBindings carries the [project] block.

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"go.kenn.io/kata/internal/config"
 	"go.kenn.io/kata/internal/githubsync"
 	"go.kenn.io/kata/internal/textsafe"
 )
@@ -93,7 +94,20 @@ func newGitHubSyncEnableCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "enable",
 		Short: "enable GitHub sync for this project",
-		Args:  cobra.NoArgs,
+		Long: `Enable one-way GitHub → Kata sync for this project.
+
+Parent link conflict resolution is controlled by --sync-mode (or
+[github] sync_mode in .kata.toml, which takes precedence):
+
+  local   (default) Locally-set parent links are preserved; GitHub's
+                    parent is skipped when a local one already exists.
+  github            GitHub is authoritative; conflicting local parent
+                    links are deleted and replaced on each sync.
+
+Example .kata.toml:
+  [github]
+  sync_mode = "github"`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
 			client, baseURL, projectID, err := githubSyncProjectClient(ctx)
@@ -104,17 +118,28 @@ func newGitHubSyncEnableCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			config := map[string]any{
+
+			// Resolve sync_mode: .kata.toml wins over --sync-mode flag.
+			syncMode := strings.TrimSpace(opts.syncMode)
+			if start, err := resolveStartPath(flags.Workspace); err == nil {
+				if tomlCfg, _, err := config.FindProjectConfig(start); err == nil {
+					if m := strings.TrimSpace(tomlCfg.Github.SyncMode); m != "" {
+						syncMode = m
+					}
+				}
+			}
+
+			cfg := map[string]any{
 				"host":         binding.Host,
 				"owner":        binding.Owner,
 				"repo":         binding.Repo,
 				"title_prefix": opts.titlePrefix,
 			}
-			if strings.TrimSpace(opts.syncMode) != "" {
-				config["sync_mode"] = strings.TrimSpace(opts.syncMode)
+			if syncMode != "" {
+				cfg["sync_mode"] = syncMode
 			}
 			body := map[string]any{
-				"config": config,
+				"config": cfg,
 			}
 			if strings.TrimSpace(opts.interval) != "" {
 				body["interval"] = strings.TrimSpace(opts.interval)

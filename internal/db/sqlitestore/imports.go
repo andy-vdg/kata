@@ -738,7 +738,12 @@ func (d *Store) reconcileImportLinks(ctx context.Context, tx *sql.Tx, p db.Impor
 			VALUES(?, ?, (SELECT uid FROM issues WHERE id = ?), (SELECT uid FROM issues WHERE id = ?), ?, ?, ?)`,
 			fromID, toID, fromID, toID, importLink.Type, p.Actor, createdAt)
 		if err != nil {
-			return nil, 0, classifyLinkInsertError(err)
+			classified := classifyLinkInsertError(err)
+			if errors.Is(classified, db.ErrParentAlreadySet) {
+				// A different parent link already exists locally; local wins in this sync mode.
+				continue
+			}
+			return nil, 0, classified
 		}
 		linkID, err := res.LastInsertId()
 		if err != nil {

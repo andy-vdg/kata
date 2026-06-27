@@ -182,8 +182,8 @@ func TestGHFetcherParentMap(t *testing.T) {
 	allowGitHubEnterpriseHost(t, "github.example")
 	runner := &fakeCommandRunner{
 		responses: []fakeCommandResponse{
-			// gh issue list response: issue 5 (databaseId=5000000005) has parent 3, issue 7 has no parent
-			{stdout: []byte(`[{"number":5,"databaseId":5000000005,"parent":{"number":3}},{"number":7,"databaseId":7000000007,"parent":null}]`)},
+			// gh issue list response: issue 5 has parent 3, issue 7 has no parent
+			{stdout: []byte(`[{"number":5,"parent":{"number":3}},{"number":7,"parent":null}]`)},
 			// REST lookup for parent number 3
 			{stdout: []byte(`{"id":900000003,"number":3,"node_id":"I_parent3","title":"Epic","state":"open"}`)},
 		},
@@ -194,11 +194,11 @@ func TestGHFetcherParentMap(t *testing.T) {
 	result, err := fetcher.ParentMap(context.Background(), binding)
 	require.NoError(t, err)
 
-	assert.Equal(t, map[int64]int64{5000000005: 900000003}, result)
+	assert.Equal(t, map[int]int64{5: 900000003}, result)
 	require.Len(t, runner.calls, 2)
 	// First call: gh issue list
 	assert.Equal(t, "gh", runner.calls[0].name)
-	assert.Equal(t, []string{"issue", "list", "--repo", "example-org/example-repo", "--json", "number,databaseId,parent", "--state", "all", "--limit", "500"}, runner.calls[0].args)
+	assert.Equal(t, []string{"issue", "list", "--repo", "example-org/example-repo", "--json", "number,parent", "--state", "all", "--limit", "500"}, runner.calls[0].args)
 	// Second call: REST lookup for parent #3
 	assert.Equal(t, "gh", runner.calls[1].name)
 	assert.Equal(t, []string{"api", "--hostname", "github.example", "repos/example-org/example-repo/issues/3"}, runner.calls[1].args)

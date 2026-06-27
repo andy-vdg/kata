@@ -599,7 +599,7 @@ func (f *fakeGitHubSyncFetcher) Comments(_ context.Context, _ githubsync.Binding
 	return f.comments[issueNumber], nil
 }
 
-func (f *fakeGitHubSyncFetcher) ParentMap(_ context.Context, _ githubsync.Binding) (map[int64]int64, error) {
+func (f *fakeGitHubSyncFetcher) ParentMap(_ context.Context, _ githubsync.Binding) (map[int]int64, error) {
 	return nil, nil
 }
 

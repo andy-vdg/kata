@@ -778,7 +778,7 @@ func (f *fakeRunnerFetcher) Comments(_ context.Context, _ Binding, issueNumber i
 	return append([]Comment(nil), f.comments[issueNumber]...), nil
 }
 
-func (f *fakeRunnerFetcher) ParentMap(_ context.Context, _ Binding) (map[int64]int64, error) {
+func (f *fakeRunnerFetcher) ParentMap(_ context.Context, _ Binding) (map[int]int64, error) {
 	return nil, nil
 }
 

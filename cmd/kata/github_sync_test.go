@@ -244,7 +244,7 @@ func (f *fakeGitHubSyncCLIFetcher) Comments(context.Context, githubsync.Binding,
 	return nil, errors.New("CLI tests should not fetch GitHub comments")
 }
 
-func (f *fakeGitHubSyncCLIFetcher) ParentMap(context.Context, githubsync.Binding) (map[int64]int64, error) {
+func (f *fakeGitHubSyncCLIFetcher) ParentMap(context.Context, githubsync.Binding) (map[int]int64, error) {
 	return nil, nil
 }
 
